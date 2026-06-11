@@ -593,9 +593,15 @@ impl AgentDriver {
             )
         );
 
-        // If we're not logged in, the root view will go to an auth screen, and all subsequent steps will fail.
-        // This should be impossible, since we enforce login before reaching this point.
-        if !AuthStateProvider::as_ref(ctx).get().is_logged_in() {
+        // Third-party child harnesses (Claude Code, OpenCode, Codex, Gemini CLI)
+        // authenticate with their own provider credentials, so they may run
+        // without a Warp login. Oz still requires login: its requests are
+        // orchestrated through Warp's servers and would fail without credentials.
+        let harness_self_authenticates = matches!(
+            selected_harness,
+            Harness::Claude | Harness::OpenCode | Harness::Codex | Harness::Gemini
+        );
+        if !harness_self_authenticates && !AuthStateProvider::as_ref(ctx).get().is_logged_in() {
             return Err(AgentDriverError::NotLoggedIn);
         }
 

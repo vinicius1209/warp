@@ -656,6 +656,7 @@ default = [
     "vertical_tabs_summary_mode",
     "tab_configs",
     "grouped_tabs",
+    "local_claude_codex_child_harnesses",
     "agent_harness",
     "hoa_onboarding_flow",
     "hoa_remote_control",

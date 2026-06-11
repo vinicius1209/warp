@@ -1460,7 +1460,10 @@ impl AgentDriverRunner {
 fn command_requires_auth(command: &CliCommand) -> bool {
     match command {
         CliCommand::Agent(agent_cmd) => match agent_cmd {
-            AgentCommand::Run { .. } => true,
+            // Third-party child harnesses (claude, opencode, codex) authenticate
+            // with their own provider credentials, so they may run without a
+            // Warp login. Oz requires login: it's orchestrated by Warp's servers.
+            AgentCommand::Run(args) => matches!(args.harness, Harness::Oz | Harness::Unknown),
             AgentCommand::RunCloud { .. } => true,
             AgentCommand::Profile(sub) => match sub {
                 AgentProfileCommand::List => true,
