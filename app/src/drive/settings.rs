@@ -24,9 +24,10 @@ define_settings_group!(WarpDriveSettings, settings: [
         private: true,
     },
     // Controls whether Warp Drive appears in the tools panel, command palette, and command search.
+    // Disabled by default in this fork: cloud sync is not used.
     enable_warp_drive: EnableWarpDrive {
         type: bool,
-        default: true,
+        default: false,
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
