@@ -173,7 +173,11 @@ pub struct AppArgs {
 
     /// Open the named launch configuration at startup. Matches the `name`
     /// field of a saved launch configuration, case-insensitively.
-    #[arg(long = "launch-config", value_name = "NAME", env = "WARP_LAUNCH_CONFIG")]
+    #[arg(
+        long = "launch-config",
+        value_name = "NAME",
+        env = "WARP_LAUNCH_CONFIG"
+    )]
     pub launch_config: Option<String>,
 }
 

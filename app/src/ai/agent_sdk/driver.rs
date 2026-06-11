@@ -599,7 +599,7 @@ impl AgentDriver {
         // orchestrated through Warp's servers and would fail without credentials.
         let harness_self_authenticates = matches!(
             selected_harness,
-            Harness::Claude | Harness::OpenCode | Harness::Codex | Harness::Gemini
+            Harness::Claude | Harness::OpenCode | Harness::Codex | Harness::Gemini | Harness::Agy
         );
         if !harness_self_authenticates && !AuthStateProvider::as_ref(ctx).get().is_logged_in() {
             return Err(AgentDriverError::NotLoggedIn);

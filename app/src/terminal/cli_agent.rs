@@ -132,6 +132,8 @@ const MISTRAL_ORANGE: ColorU = ColorU {
 pub enum CLIAgent {
     Claude,
     Gemini,
+    /// Antigravity CLI (`agy`), Google's successor to Gemini CLI.
+    Agy,
     Codex,
     Amp,
     Droid,
@@ -153,6 +155,7 @@ impl CLIAgent {
         match self {
             CLIAgent::Claude => "claude",
             CLIAgent::Gemini => "gemini",
+            CLIAgent::Agy => "agy",
             CLIAgent::Codex => "codex",
             CLIAgent::Amp => "amp",
             CLIAgent::Droid => "droid",
@@ -190,6 +193,7 @@ impl CLIAgent {
             Harness::Oz => None,
             Harness::Claude => Some(CLIAgent::Claude),
             Harness::Gemini => Some(CLIAgent::Gemini),
+            Harness::Agy => Some(CLIAgent::Agy),
             Harness::OpenCode => Some(CLIAgent::OpenCode),
             Harness::Codex => Some(CLIAgent::Codex),
             Harness::Unknown => Some(CLIAgent::Unknown),
@@ -200,6 +204,7 @@ impl CLIAgent {
         match self {
             CLIAgent::Claude => "Claude Code",
             CLIAgent::Gemini => "Gemini",
+            CLIAgent::Agy => "Antigravity",
             CLIAgent::Codex => "Codex",
             CLIAgent::Amp => "Amp",
             CLIAgent::Droid => "Droid",
@@ -220,6 +225,9 @@ impl CLIAgent {
         match self {
             CLIAgent::Claude => Some(Icon::ClaudeLogo),
             CLIAgent::Gemini => Some(Icon::GeminiLogo),
+            // Antigravity ships without a brand asset yet; the brand color
+            // drives the toolbar tile until an official SVG is wired up.
+            CLIAgent::Agy => None,
             CLIAgent::Codex => Some(Icon::OpenAILogo),
             CLIAgent::Amp => Some(Icon::AmpLogo),
             CLIAgent::Droid => Some(Icon::DroidLogo),
@@ -255,6 +263,7 @@ impl CLIAgent {
                 SkillProvider::Claude,
             ],
             CLIAgent::Gemini => &[SkillProvider::Agents, SkillProvider::Gemini],
+            CLIAgent::Agy => &[SkillProvider::Agents],
             CLIAgent::Amp => &[SkillProvider::Agents],
             CLIAgent::Copilot => &[SkillProvider::Agents, SkillProvider::Copilot],
             CLIAgent::Droid => &[SkillProvider::Droid, SkillProvider::Agents],
@@ -295,6 +304,8 @@ impl CLIAgent {
         match self {
             CLIAgent::Claude => Some(CLAUDE_ORANGE),
             CLIAgent::Gemini => Some(GEMINI_BLUE),
+            // Google-family blue until Antigravity's official brand color is sourced.
+            CLIAgent::Agy => Some(GEMINI_BLUE),
             CLIAgent::Codex => Some(OPENAI_COLOR),
             CLIAgent::Amp => Some(AMP_COLOR),
             CLIAgent::Droid => Some(DROID_COLOR),
@@ -558,6 +569,7 @@ impl From<CLIAgent> for CLIAgentType {
         match agent {
             CLIAgent::Claude => CLIAgentType::Claude,
             CLIAgent::Gemini => CLIAgentType::Gemini,
+            CLIAgent::Agy => CLIAgentType::Agy,
             CLIAgent::Codex => CLIAgentType::Codex,
             CLIAgent::Amp => CLIAgentType::Amp,
             CLIAgent::Droid => CLIAgentType::Droid,

@@ -36,6 +36,7 @@ use crate::terminal::model::block::{BlockId, SerializedBlock};
 use crate::terminal::CLIAgent;
 use crate::util::path::resolve_executable;
 
+mod agy;
 pub(crate) mod claude_code;
 pub(crate) mod claude_transcript;
 mod codex;
@@ -43,6 +44,7 @@ pub(crate) mod codex_transcript;
 mod gemini;
 mod json_utils;
 mod telemetry;
+use agy::AgyHarness;
 pub(crate) use claude_code::ClaudeHarness;
 use claude_transcript::ClaudeResumeInfo;
 use codex::CodexHarness;
@@ -254,6 +256,7 @@ pub(crate) fn harness_kind(harness: Harness) -> Result<HarnessKind, AgentDriverE
         Harness::Codex => Ok(HarnessKind::ThirdParty(Box::new(CodexHarness))),
         Harness::OpenCode => Ok(HarnessKind::Unsupported(Harness::OpenCode)),
         Harness::Gemini => Ok(HarnessKind::ThirdParty(Box::new(GeminiHarness))),
+        Harness::Agy => Ok(HarnessKind::ThirdParty(Box::new(AgyHarness))),
         Harness::Unknown => Err(AgentDriverError::InvalidRuntimeState),
     }
 }
@@ -447,7 +450,12 @@ pub(crate) fn harness_model_env_vars(
         Harness::Claude => {
             env_vars.insert(OsString::from("ANTHROPIC_MODEL"), OsString::from(model_id));
         }
-        Harness::Oz | Harness::OpenCode | Harness::Gemini | Harness::Codex | Harness::Unknown => {}
+        Harness::Oz
+        | Harness::OpenCode
+        | Harness::Gemini
+        | Harness::Codex
+        | Harness::Agy
+        | Harness::Unknown => {}
     }
 
     env_vars

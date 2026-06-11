@@ -472,6 +472,7 @@ pub enum CodePanelsFileOpenEntrypoint {
 pub enum CLIAgentType {
     Claude,
     Gemini,
+    Agy,
     Codex,
     Amp,
     Droid,

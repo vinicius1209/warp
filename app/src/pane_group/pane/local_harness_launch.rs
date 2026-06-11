@@ -134,6 +134,14 @@ pub(super) fn build_local_codex_child_command(prompt: &str) -> String {
     let quoted_prompt = shell_quote(prompt);
     format!("codex --dangerously-bypass-approvals-and-sandbox {quoted_prompt}")
 }
+pub(super) fn build_local_agy_child_command(prompt: &str) -> String {
+    let quoted_prompt = shell_quote(prompt);
+    // Like the other hidden child panes, skip agy's tool-approval prompts so
+    // the child can start unattended (`--dangerously-skip-permissions` is
+    // agy's replacement for Gemini CLI's `--yolo`). `-i` seeds the prompt and
+    // stays in interactive mode.
+    format!("agy --dangerously-skip-permissions -i {quoted_prompt}")
+}
 
 pub(super) fn local_child_task_config(
     harness: Harness,
@@ -144,7 +152,7 @@ pub(super) fn local_child_task_config(
         .and_then(normalize_orchestrator_agent_name);
     match harness {
         Harness::Oz | Harness::Unknown => None,
-        Harness::Claude | Harness::OpenCode | Harness::Gemini | Harness::Codex => {
+        Harness::Claude | Harness::OpenCode | Harness::Gemini | Harness::Codex | Harness::Agy => {
             Some(AgentConfigSnapshot {
                 name: agent_name,
                 harness: Some(HarnessConfig::from_harness_type(harness)),
@@ -236,6 +244,14 @@ pub(super) async fn prepare_local_harness_child_launch(
             validate_cli_installed("opencode", Some("https://opencode.ai/docs"))
                 .map_err(|error: AgentDriverError| error.to_string())?;
             build_local_opencode_child_command(&prompt)
+        }
+        Harness::Agy => {
+            validate_cli_installed(
+                "agy",
+                Some("https://antigravity.google/docs/cli-getting-started"),
+            )
+            .map_err(|error: AgentDriverError| error.to_string())?;
+            build_local_agy_child_command(&prompt)
         }
         Harness::Gemini => unreachable!("normalize_local_child_harness filters out Gemini"),
     };
