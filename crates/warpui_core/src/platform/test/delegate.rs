@@ -7,7 +7,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use parking_lot::Mutex;
 use pathfinder_geometry::rect::{RectF, RectI};
-use pathfinder_geometry::vector::{vec2f, vec2i, Vector2F, Vector2I};
+// Irreducible gated import: supports the cfg'd `FontDB::rasterize_glyph` impl.
+#[cfg(not(feature = "tui"))]
+use pathfinder_geometry::vector::vec2i;
+use pathfinder_geometry::vector::{vec2f, Vector2F, Vector2I};
 
 use crate::accessibility::AccessibilityContent;
 use crate::clipboard::InMemoryClipboard;
@@ -16,15 +19,20 @@ use crate::keymap::Keystroke;
 use crate::modals::{AlertDialog, ModalId};
 use crate::notification::UserNotification;
 use crate::platform::file_picker::{FilePickerCallback, FilePickerConfiguration};
+// Irreducible gated import: supports the cfg'd `FontDB::text_layout_system`
+// impl-method signature.
+#[cfg(not(feature = "tui"))]
+use crate::platform::TextLayoutSystem;
 use crate::platform::{
     self, Cursor, MicrophoneAccessState, RequestNotificationPermissionsCallback,
-    SendNotificationErrorCallback, TerminationMode, TextLayoutSystem, WindowFocusBehavior,
-    WindowOptions,
+    SendNotificationErrorCallback, TerminationMode, WindowFocusBehavior, WindowOptions,
 };
-use crate::text_layout::TextAlignment;
 use crate::windowing::WindowCallbacks;
+// Irreducible gated import: supports the cfg'd `render_scene` impl-method.
+#[cfg(not(feature = "tui"))]
+use crate::Scene;
 use crate::{
-    geometry, ApplicationBundleInfo, DisplayId, DisplayIdx, OptionalPlatformWindow, Scene, WindowId,
+    geometry, ApplicationBundleInfo, DisplayId, DisplayIdx, OptionalPlatformWindow, WindowId,
 };
 
 pub struct AppDelegate {
@@ -469,6 +477,9 @@ impl platform::WindowContext for Window {
         Some(2048)
     }
 
+    // Irreducible inline gate: impl-side counterpart of a cfg'd trait method
+    // (trait impls cannot be split across blocks).
+    #[cfg(not(feature = "tui"))]
     fn render_scene(&self, _scene: Rc<Scene>) {}
 
     fn request_redraw(&self) {}
@@ -581,6 +592,8 @@ impl platform::FontDB for FontDB {
         None
     }
 
+    // Irreducible inline gate: impl-side counterpart of a cfg'd trait method.
+    #[cfg(not(feature = "tui"))]
     fn glyph_raster_bounds(
         &self,
         _font_id: crate::fonts::FontId,
@@ -600,6 +613,8 @@ impl platform::FontDB for FontDB {
         Ok(RectI::default())
     }
 
+    // Irreducible inline gate: impl-side counterpart of a cfg'd trait method.
+    #[cfg(not(feature = "tui"))]
     fn rasterize_glyph(
         &self,
         _font_id: crate::fonts::FontId,
@@ -633,33 +648,9 @@ impl platform::FontDB for FontDB {
         None
     }
 
+    // Irreducible inline gate: impl-side counterpart of a cfg'd trait method.
+    #[cfg(not(feature = "tui"))]
     fn text_layout_system(&self) -> &dyn TextLayoutSystem {
         self
-    }
-}
-
-impl platform::TextLayoutSystem for FontDB {
-    fn layout_line(
-        &self,
-        _text: &str,
-        line_style: platform::LineStyle,
-        _style_runs: &[(std::ops::Range<usize>, crate::text_layout::StyleAndFont)],
-        _max_width: f32,
-        _clip_config: crate::text_layout::ClipConfig,
-    ) -> crate::text_layout::Line {
-        crate::text_layout::Line::empty(line_style.font_size, line_style.line_height_ratio, 0)
-    }
-
-    fn layout_text(
-        &self,
-        _text: &str,
-        line_style: platform::LineStyle,
-        _style_runs: &[(std::ops::Range<usize>, crate::text_layout::StyleAndFont)],
-        _max_width: f32,
-        _max_height: f32,
-        _alignment: TextAlignment,
-        _first_line_head_indent: Option<f32>,
-    ) -> crate::text_layout::TextFrame {
-        crate::text_layout::TextFrame::empty(line_style.font_size, line_style.line_height_ratio)
     }
 }

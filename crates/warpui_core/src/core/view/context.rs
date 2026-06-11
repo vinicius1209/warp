@@ -1,3 +1,6 @@
+#[cfg(not(feature = "tui"))]
+mod gui;
+
 use std::any::Any;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -5,7 +8,6 @@ use std::sync::Arc;
 
 use futures::future::{AbortHandle, Abortable};
 use futures::{Future, FutureExt};
-use pathfinder_geometry::rect::RectF;
 use thiserror::Error;
 
 use super::handle::{AnyViewHandle, ReadView, UpdateView, ViewAsRef, ViewHandle, WeakViewHandle};
@@ -94,20 +96,6 @@ impl<'a, T: View> ViewContext<'a, T> {
     pub fn is_self_or_child_focused(&self) -> bool {
         self.app
             .check_view_or_child_focused(self.window_id, &self.view_id)
-    }
-
-    pub fn element_position_by_id<S>(&self, id: S) -> Option<RectF>
-    where
-        S: AsRef<str>,
-    {
-        let presenter = self.app.presenter(self.window_id);
-
-        if let Some(presenter) = presenter {
-            let borrowed_presenter = presenter.borrow();
-            borrowed_presenter.position_cache().get_position(id)
-        } else {
-            None
-        }
     }
 
     pub fn focus<S: View>(&mut self, handle: &ViewHandle<S>) {

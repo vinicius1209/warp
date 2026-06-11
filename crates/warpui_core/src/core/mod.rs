@@ -3,7 +3,11 @@ mod app;
 mod autotracking;
 mod backend;
 mod entity;
+#[cfg(not(feature = "tui"))]
+mod gui;
 mod model;
+#[cfg(feature = "tui")]
+mod tui;
 mod view;
 mod window;
 
@@ -21,7 +25,11 @@ pub use action::*;
 use anyhow::Error;
 pub use app::*;
 pub use autotracking::Tracked;
-pub use backend::{Backend, BackendView, ErasedView, GuiBackend, GuiPresenterState};
+#[cfg(not(feature = "tui"))]
+pub use backend::GuiPresenterState;
+#[cfg(feature = "tui")]
+pub use backend::TuiBackend;
+pub use backend::{Backend, GuiBackend};
 use derivative::Derivative;
 pub use entity::*;
 use futures_util::future::BoxFuture;
@@ -31,9 +39,10 @@ use serde::{Deserialize, Serialize};
 pub use view::*;
 pub use window::*;
 
+use crate::keymap;
 use crate::platform::{self, FullscreenState, WindowBounds, WindowStyle};
+#[cfg(not(feature = "tui"))]
 use crate::rendering::OnGPUDeviceSelected;
-use crate::{keymap, Element};
 
 /// A unique identifier for a display.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,11 +142,35 @@ impl fmt::Display for TaskId {
 
 pub type OptionalPlatformWindow = Option<Rc<dyn platform::Window>>;
 
-type ActionCallback =
-    dyn FnMut(&mut dyn AnyView, &dyn Any, &mut AppContext, WindowId, EntityId) -> bool;
+/// What a [`View`] renders to under the active backend: `Box<dyn Element>` on
+/// the GUI build, `Box<dyn Any>` on the TUI build (`--features tui`).
+///
+/// This is a transparent alias, so existing GUI `View` impls whose `render`
+/// returns `Box<dyn Element>` compile unchanged.
+#[cfg(not(feature = "tui"))]
+pub type RenderOutput = <GuiBackend as Backend>::RenderOutput;
+#[cfg(feature = "tui")]
+pub type RenderOutput = <TuiBackend as Backend>::RenderOutput;
 
-type TypedActionCallback =
-    dyn FnMut(&mut dyn AnyView, &dyn Any, &mut AppContext, WindowId, EntityId);
+// The view callbacks receive the single type-erased view object, `dyn AnyView`.
+// `AppContextImpl<B>` stores these registries, so the context parameter keeps
+// the backend parameter `B`. The `+ 'static` pins the trait-object lifetime so
+// the callbacks are not higher-ranked over it.
+type ActionCallback<B> = dyn FnMut(
+    &mut (dyn AnyView + 'static),
+    &dyn Any,
+    &mut AppContextImpl<B>,
+    WindowId,
+    EntityId,
+) -> bool;
+
+type TypedActionCallback<B> =
+    dyn FnMut(&mut (dyn AnyView + 'static), &dyn Any, &mut AppContextImpl<B>, WindowId, EntityId);
+
+/// Per-view-type action handlers, keyed by action name. Aliased to keep the
+/// [`AppContextImpl::actions`](app::AppContextImpl) field type within Clippy's
+/// complexity threshold now that the callback is parameterized over `B`.
+type ActionHandlersByName<B> = HashMap<String, Vec<Box<ActionCallback<B>>>>;
 
 type GlobalActionCallback =
     dyn FnMut(&dyn Any, &'static std::panic::Location<'static>, &mut AppContext);
@@ -173,6 +206,7 @@ pub struct AddWindowOptions {
     /// will have the same position and size as this window.
     pub anchor_new_windows_from_closed_position: NextNewWindowsHasThisWindowsBoundsUponClose,
     /// The callback to be called when the GPU driver this window will render to is selected.
+    #[cfg(not(feature = "tui"))]
     #[derivative(Debug = "ignore")]
     pub on_gpu_driver_selected: Option<Box<OnGPUDeviceSelected>>,
     /// This is a name to distinguish different windows among one application. It is a no-op on all
@@ -232,11 +266,15 @@ pub enum Effect {
     },
 }
 
+/// The object-safe, type-erased view object stored per window. Carries the
+/// render + focus/blur/keymap/a11y hooks the shared core needs without naming
+/// the concrete view type. Shared by both backends; `render` produces the
+/// active backend's [`RenderOutput`].
 pub trait AnyView {
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn ui_name(&self) -> &'static str;
-    fn render(&self, app: &AppContext) -> Box<dyn Element>;
+    fn render(&self, app: &AppContext) -> RenderOutput;
     fn on_focus(
         &mut self,
         focus_ctx: &FocusContext,
@@ -296,7 +334,7 @@ where
         T::ui_name()
     }
 
-    fn render<'a>(&self, app: &AppContext) -> Box<dyn Element> {
+    fn render(&self, app: &AppContext) -> RenderOutput {
         View::render(self, app)
     }
 
@@ -540,15 +578,29 @@ type ModelFromFutureCallback = dyn FnOnce(&mut dyn Any, Box<dyn Any>, &mut AppCo
 type ModelFromStreamItemCallback = dyn FnMut(&mut dyn Any, Box<dyn Any>, &mut AppContext, EntityId);
 type ModelFromStreamDoneCallback = dyn FnOnce(&mut dyn Any, &mut AppContext, EntityId);
 
-type ViewFromFutureCallback =
-    dyn FnOnce(&mut dyn AnyView, Box<dyn Any>, &mut AppContext, WindowId, EntityId);
+// The view task callbacks receive the single type-erased view object,
+// `dyn AnyView`, shared by both backends. The `+ 'static` pins the trait-object
+// lifetime so the callbacks are not higher-ranked over it.
+type ViewFromFutureCallback<B> = dyn FnOnce(
+    &mut (dyn AnyView + 'static),
+    Box<dyn Any>,
+    &mut AppContextImpl<B>,
+    WindowId,
+    EntityId,
+);
 
-type ViewFromStreamItemCallback =
-    dyn FnMut(&mut dyn AnyView, Box<dyn Any>, &mut AppContext, WindowId, EntityId);
+type ViewFromStreamItemCallback<B> = dyn FnMut(
+    &mut (dyn AnyView + 'static),
+    Box<dyn Any>,
+    &mut AppContextImpl<B>,
+    WindowId,
+    EntityId,
+);
 
-type ViewFromStreamDoneCallback = dyn FnOnce(&mut dyn AnyView, &mut AppContext, WindowId, EntityId);
+type ViewFromStreamDoneCallback<B> =
+    dyn FnOnce(&mut (dyn AnyView + 'static), &mut AppContextImpl<B>, WindowId, EntityId);
 
-enum TaskCallback {
+enum TaskCallback<B: Backend> {
     ModelFromFuture {
         model_id: EntityId,
         callback: Box<ModelFromFutureCallback>,
@@ -561,13 +613,13 @@ enum TaskCallback {
     ViewFromFuture {
         window_id: WindowId,
         view_id: EntityId,
-        callback: Box<ViewFromFutureCallback>,
+        callback: Box<ViewFromFutureCallback<B>>,
     },
     ViewFromStream {
         window_id: WindowId,
         view_id: EntityId,
-        on_item: Box<ViewFromStreamItemCallback>,
-        on_done: Box<ViewFromStreamDoneCallback>,
+        on_item: Box<ViewFromStreamItemCallback<B>>,
+        on_done: Box<ViewFromStreamDoneCallback<B>>,
     },
 }
 

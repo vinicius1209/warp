@@ -991,6 +991,8 @@ pub(crate) mod test_utils {
     use super::*;
 
     /// Creates an `Arc<StaticImage>` with the given dimensions for use in unit tests.
+    /// Only the GUI-gated scene/element tests use this on a `tui` build.
+    #[cfg_attr(feature = "tui", allow(dead_code))]
     pub(crate) fn make_static_image(width: u32, height: u32) -> Arc<StaticImage> {
         Arc::new(StaticImage {
             img: image::RgbaImage::new(width, height),

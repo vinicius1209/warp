@@ -1,5 +1,7 @@
 pub mod app;
 pub mod file_picker;
+#[cfg(not(feature = "tui"))]
+mod gui;
 pub mod keyboard;
 pub mod menu;
 
@@ -9,8 +11,9 @@ pub mod wasm;
 
 use std::any::Any;
 use std::collections::HashSet;
-use std::ops::Range;
 use std::path::Path;
+// Irreducible gated import: supports the cfg'd `WindowContext::render_scene`.
+#[cfg(not(feature = "tui"))]
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -22,6 +25,8 @@ pub use file_picker::{
     FilePickerCallback, FilePickerConfiguration, FileType, SaveFilePickerCallback,
     SaveFilePickerConfiguration,
 };
+#[cfg(not(feature = "tui"))]
+pub use gui::TextLayoutSystem;
 use lazy_static::lazy_static;
 use pathfinder_geometry::rect::{RectF, RectI};
 use pathfinder_geometry::vector::{Vector2F, Vector2I};
@@ -29,19 +34,27 @@ use serde::{Deserialize, Serialize};
 use warp_util::path::ShellFamily;
 
 use crate::accessibility::AccessibilityContent;
+// Irreducible gated import: supports the cfg'd `FontDB::rasterize_glyph`.
+#[cfg(not(feature = "tui"))]
 use crate::fonts::canvas::RasterFormat;
-use crate::fonts::{
-    FamilyId, FontId, GlyphId, Metrics, Properties, RasterizedGlyph, SubpixelAlignment,
-};
+use crate::fonts::{FamilyId, FontId, GlyphId, Metrics, Properties};
+// Irreducible gated import: supports the cfg'd `FontDB::rasterize_glyph`.
+#[cfg(not(feature = "tui"))]
+use crate::fonts::{RasterizedGlyph, SubpixelAlignment};
 use crate::keymap::Keystroke;
 use crate::modals::{AlertDialog, ModalId};
 use crate::notification::{NotificationSendError, RequestPermissionsOutcome, UserNotification};
-use crate::rendering::{GPUPowerPreference, OnGPUDeviceSelected};
-use crate::text_layout::{ClipConfig, Line, StyleAndFont, TextAlignment, TextFrame};
+// Irreducible gated import: supports the cfg'd `WindowOptions` fields and
+// `FontDB` glyph methods.
+#[cfg(not(feature = "tui"))]
+use crate::rendering::{self, GPUPowerPreference, OnGPUDeviceSelected};
 use crate::windowing::WindowCallbacks;
+// Irreducible gated import: supports the cfg'd `WindowContext::render_scene`.
+#[cfg(not(feature = "tui"))]
+use crate::Scene;
 use crate::{
-    geometry, rendering, AppContext, ApplicationBundleInfo, Clipboard, DisplayId, DisplayIdx,
-    OptionalPlatformWindow, Scene, WindowId,
+    geometry, AppContext, ApplicationBundleInfo, Clipboard, DisplayId, DisplayIdx,
+    OptionalPlatformWindow, WindowId,
 };
 
 #[cfg(not(target_family = "wasm"))]
@@ -95,8 +108,12 @@ pub struct WindowOptions {
     pub style: WindowStyle,
     pub background_blur_radius_pixels: Option<u8>,
     pub background_blur_texture: bool,
+    // Irreducible inline gate: cfg'd field on a shared struct.
+    #[cfg(not(feature = "tui"))]
     pub gpu_power_preference: GPUPowerPreference,
     pub backend_preference: Option<GraphicsBackend>,
+    // Irreducible inline gate: cfg'd field on a shared struct.
+    #[cfg(not(feature = "tui"))]
     pub on_gpu_device_info_reported: Box<OnGPUDeviceSelected>,
     /// This is an identifier to distinguish different windows among one application. It is a no-op
     /// on all platforms except X11 Linux.
@@ -117,7 +134,6 @@ impl std::fmt::Debug for WindowOptions {
                 &self.background_blur_radius_pixels,
             )
             .field("background_blur_texture", &self.background_blur_texture)
-            .field("gpu_power_preference", &self.gpu_power_preference)
             .field("backend_preference", &self.backend_preference)
             .field("window_instance", &self.window_instance)
             .finish()
@@ -304,34 +320,6 @@ pub trait LoadedSystemFonts: 'static + Any + Send + Sync {
     fn as_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
-/// Trait that implements text layout. Implementors must be [`Send`] and
-/// [`Sync`] so that text can be laid out in a background thread.
-pub trait TextLayoutSystem: 'static + Send + Sync {
-    /// Lays out a single line of text.
-    fn layout_line(
-        &self,
-        text: &str,
-        line_style: LineStyle,
-        style_runs: &[(Range<usize>, StyleAndFont)],
-        max_width: f32,
-        clip_config: ClipConfig,
-    ) -> Line;
-
-    /// Lays out text into a series of lines that fit within the bounding box
-    /// defined by `max_width` and `max_height`.
-    #[allow(clippy::too_many_arguments)]
-    fn layout_text(
-        &self,
-        text: &str,
-        line_style: LineStyle,
-        style_runs: &[(Range<usize>, StyleAndFont)],
-        max_width: f32,
-        max_height: f32,
-        alignment: TextAlignment,
-        first_line_head_indent: Option<f32>,
-    ) -> TextFrame;
-}
-
 /// A trait for working with fonts.
 ///
 /// This interface provides a platform-agnostic API for loading fonts,
@@ -398,6 +386,8 @@ pub trait FontDB: 'static {
     fn glyph_advance(&self, font_id: FontId, glyph_id: GlyphId) -> Result<Vector2I>;
 
     /// Computes the size of the canvas needed to rasterize the glyph.
+    // Irreducible inline gate: cfg'd method on a shared trait.
+    #[cfg(not(feature = "tui"))]
     fn glyph_raster_bounds(
         &self,
         font_id: FontId,
@@ -411,6 +401,8 @@ pub trait FontDB: 'static {
     fn glyph_typographic_bounds(&self, font_id: FontId, glyph_id: GlyphId) -> Result<RectI>;
 
     /// Rasterizes a single glyph so it can be rendered to the screen.
+    // Irreducible inline gate: cfg'd method on a shared trait.
+    #[cfg(not(feature = "tui"))]
     #[allow(clippy::too_many_arguments)]
     fn rasterize_glyph(
         &self,
@@ -427,6 +419,8 @@ pub trait FontDB: 'static {
     /// given font.
     fn glyph_for_char(&self, font_id: FontId, char: char) -> Option<GlyphId>;
 
+    // Irreducible inline gate: cfg'd method on a shared trait.
+    #[cfg(not(feature = "tui"))]
     fn text_layout_system(&self) -> &dyn TextLayoutSystem;
 }
 
@@ -476,6 +470,8 @@ pub trait WindowContext {
 
     /// Provides the window the next scene to render and asks it to schedule a
     /// redraw.
+    // Irreducible inline gate: cfg'd method on a shared trait.
+    #[cfg(not(feature = "tui"))]
     fn render_scene(&self, scene: Rc<Scene>);
 
     /// Schedules a redraw of the window.

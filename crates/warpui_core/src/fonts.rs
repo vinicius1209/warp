@@ -1,7 +1,8 @@
 pub mod canvas;
 mod external_fallback;
+#[cfg(not(feature = "tui"))]
+mod gui;
 mod metrics;
-mod text_layout_system;
 
 use std::hash::Hash;
 
@@ -10,15 +11,14 @@ use dashmap::mapref::entry::Entry;
 use dashmap::mapref::one::Ref;
 use dashmap::DashMap;
 use enum_iterator::Sequence;
+#[cfg(not(feature = "tui"))]
+pub use gui::TextLayoutSystem;
 use markdown_parser::weight::CustomWeight;
-use ordered_float::OrderedFloat;
 use pathfinder_geometry::rect::{RectF, RectI};
 use pathfinder_geometry::vector::{vec2f, Vector2F, Vector2I};
 use serde::{Deserialize, Serialize};
-pub use text_layout_system::TextLayoutSystem;
 
-use crate::scene::GlyphKey;
-use crate::{platform, rendering, SingletonEntity};
+use crate::{platform, SingletonEntity};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Sequence, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema_gen", derive(schemars::JsonSchema))]
@@ -123,8 +123,12 @@ impl CustomWeightConversion for CustomWeight {
     }
 }
 
+// Irreducible gated re-export: the consumer (`core/gui.rs`) reaches this as
+// `fonts::FontBytes`; relocating it would change that path for no gain.
+#[cfg(not(feature = "tui"))]
+pub(crate) use external_fallback::FontBytes;
+pub(crate) use external_fallback::RequestedFallbackFontSource;
 pub use external_fallback::{ExternalFontFamily, FallbackFontEvent, FallbackFontModel};
-pub(crate) use external_fallback::{FontBytes, RequestedFallbackFontSource};
 pub use metrics::Metrics;
 #[cfg(not(target_family = "wasm"))]
 use {futures_util::future::BoxFuture, futures_util::FutureExt};
@@ -201,8 +205,6 @@ pub struct FontInfo {
     pub is_monospace: bool,
 }
 
-type RasterBoundsKey = (GlyphKey, (OrderedFloat<f32>, OrderedFloat<f32>));
-
 pub struct Cache {
     selections: DashMap<(FamilyId, Properties), FontId>,
     /// Note that the properties stored in this map might not exactly match the
@@ -214,7 +216,9 @@ pub struct Cache {
     glyphs_by_char: DashMap<(FontId, char), Option<(GlyphId, FontId)>>, // Also caching font id here for possible fallback fonts.
     glyph_advances: DashMap<(FontId, GlyphId), Result<Vector2I, Error>>,
     glyph_typographic_bounds: DashMap<(FontId, GlyphId), Result<RectI, Error>>,
-    raster_bounds: DashMap<RasterBoundsKey, Result<RectI, Error>>,
+    // Irreducible inline gate: cfg'd field on a shared struct.
+    #[cfg(not(feature = "tui"))]
+    raster_bounds: DashMap<gui::RasterBoundsKey, Result<RectI, Error>>,
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     available_system_fonts: Option<Vec<(Option<FamilyId>, FontInfo)>>,
     font_fallback_cache: FontFallbackCache,
@@ -249,24 +253,18 @@ impl Cache {
             glyphs_by_char: Default::default(),
             glyph_advances: Default::default(),
             glyph_typographic_bounds: Default::default(),
+            // Irreducible inline gate: init of a cfg'd field.
+            #[cfg(not(feature = "tui"))]
             raster_bounds: Default::default(),
             available_system_fonts: Default::default(),
             font_fallback_cache: Default::default(),
         }
     }
 
-    /// Returns the [`TextLayoutSystem`], which can be used to layout text either on the main thread
-    /// or in the background.
-    pub fn text_layout_system(&self) -> TextLayoutSystem<'_> {
-        TextLayoutSystem {
-            platform: self.font_db().text_layout_system(),
-            cache: &self.font_fallback_cache,
-        }
-    }
-
     // TODO(alokedesai): Better consolidate the caching logic between the FontCache and the
     // TextLayoutCache so we don't need to leak the platform-specific implementation of the
     // FontDB outside of this struct.
+    #[cfg_attr(feature = "tui", allow(dead_code))]
     pub(super) fn font_db(&self) -> &dyn platform::FontDB {
         self.platform.as_ref()
     }
@@ -393,50 +391,6 @@ impl Cache {
         }
     }
 
-    pub fn glyph_raster_bounds(
-        &self,
-        glyph_key: GlyphKey,
-        scale: Vector2F,
-        glyph_config: &rendering::GlyphConfig,
-    ) -> Result<RectI> {
-        let entry = self
-            .raster_bounds
-            .entry((glyph_key, (scale.x().into(), scale.y().into())));
-        let bounds = match entry {
-            Entry::Occupied(entry) => entry.into_ref(),
-            Entry::Vacant(entry) => entry.insert(self.platform.glyph_raster_bounds(
-                glyph_key.font_id,
-                glyph_key.font_size.into(),
-                glyph_key.glyph_id,
-                scale,
-                glyph_config,
-            )),
-        };
-        match bounds.value() {
-            Ok(bounds) => Ok(*bounds),
-            Err(error) => Err(Error::msg(error.to_string())),
-        }
-    }
-
-    pub fn rasterized_glyph(
-        &self,
-        glyph_key: GlyphKey,
-        scale: Vector2F,
-        subpixel_alignment: SubpixelAlignment,
-        glyph_config: &rendering::GlyphConfig,
-        format: canvas::RasterFormat,
-    ) -> Result<RasterizedGlyph> {
-        self.platform.rasterize_glyph(
-            glyph_key.font_id,
-            glyph_key.font_size.into(),
-            glyph_key.glyph_id,
-            scale,
-            subpixel_alignment,
-            glyph_config,
-            format,
-        )
-    }
-
     /// Checks for a matching glyph in the system fallback fonts.
     fn system_font_fallback(&self, ch: char, font: FontId) -> Option<(GlyphId, FontId)> {
         self.platform
@@ -517,6 +471,7 @@ impl Cache {
         bounds.width()
     }
 
+    #[cfg_attr(feature = "tui", allow(dead_code))]
     pub(crate) fn remove_glyphs_by_char_entry(&mut self, key: (FontId, char)) {
         self.glyphs_by_char.remove(&key);
     }

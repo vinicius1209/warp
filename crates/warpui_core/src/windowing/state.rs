@@ -1,3 +1,6 @@
+#[cfg(not(feature = "tui"))]
+mod gui;
+
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter};
 
@@ -5,7 +8,6 @@ use pathfinder_geometry::rect::RectF;
 
 use super::WindowCallbacks;
 use crate::platform::{self, FullscreenState, TerminationMode, WindowFocusBehavior};
-use crate::scene::{CornerRadius, Radius};
 use crate::{
     geometry, windowing, DisplayId, DisplayIdx, Entity, ModelContext, OptionalPlatformWindow,
     SingletonEntity, WindowId,
@@ -186,18 +188,7 @@ impl WindowManager {
         current_window_is_active != previous_window_was_active
     }
 
-    /// The window itself usually has rounded corners, except when running in a tiling window
-    /// manager or when on Windows. We don't need to specify a custom window corner radius on
-    /// Windows because we use OS APIs to round the corners of the window.
-    pub fn window_corner_radius(&self) -> CornerRadius {
-        let radius = if self.is_tiling_window_manager() || cfg!(windows) {
-            0.
-        } else {
-            8.
-        };
-        CornerRadius::with_all(Radius::Pixels(radius))
-    }
-
+    #[cfg_attr(feature = "tui", allow(dead_code))]
     pub(crate) fn open_window(
         &mut self,
         window_id: WindowId,
@@ -218,6 +209,7 @@ impl WindowManager {
         self.platform.remove_window(window_id)
     }
 
+    #[cfg_attr(feature = "tui", allow(dead_code))]
     pub(crate) fn close_window_async(
         &self,
         window_id: WindowId,

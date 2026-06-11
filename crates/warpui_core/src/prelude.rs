@@ -6,18 +6,15 @@ pub use crate::core::{
     AppContext, Entity, GetSingletonModelHandle as _, ModelContext, ModelHandle, SingletonEntity,
     TypedActionView, View, ViewContext, ViewHandle,
 };
-pub use crate::elements::{
-    Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
-    DropShadow, Element, Empty, Fill, Flex, Hoverable, MainAxisAlignment, MainAxisSize, MinSize,
-    MouseStateHandle, Padding, ParentElement as _, Radius, SavePosition, Text,
-};
 pub use crate::platform::Cursor;
-pub use crate::presenter::EventContext;
-pub use crate::ui_components::components::Coords;
 
-pub mod stack {
-    pub use crate::elements::{
-        AnchorPair, ChildAnchor, OffsetPositioning, OffsetType, ParentAnchor, ParentOffsetBounds,
-        PositioningAxis, Stack, XAxisAnchor, YAxisAnchor,
-    };
-}
+#[cfg(not(feature = "tui"))]
+mod gui;
+#[cfg(not(feature = "tui"))]
+pub use gui::*;
+
+// The tui prelude is an empty stub until M8 lands the in-core TUI element
+// library; M8 adds `pub use tui::*;` once it has content (a glob re-export of
+// an empty module trips `unused_imports`).
+#[cfg(feature = "tui")]
+mod tui;

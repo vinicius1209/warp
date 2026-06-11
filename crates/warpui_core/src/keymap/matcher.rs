@@ -157,6 +157,7 @@ impl Matcher {
     /// binding that matches the View's default context. If the binding is invalid (indicated by
     /// [`IsBindingValid::No`]), the app will panic if `debug_assertions` are enabled.
     #[cfg(debug_assertions)]
+    #[cfg_attr(feature = "tui", allow(dead_code))]
     pub(crate) fn register_binding_validator<F: Fn(BindingLens) -> IsBindingValid + 'static>(
         &mut self,
         context: Context,

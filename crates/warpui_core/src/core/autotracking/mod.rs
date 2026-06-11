@@ -99,8 +99,9 @@
 
 mod tracked;
 
-#[cfg(test)]
-#[path = "autotracking_tests.rs"]
+// GUI-only tests: depend on the GUI test harness's auto build-scene render loop.
+#[cfg(all(test, not(feature = "tui")))]
+#[path = "autotracking_gui_tests.rs"]
 mod tests;
 
 use std::cell::UnsafeCell;
@@ -171,6 +172,8 @@ where
 ///
 /// This function requires that only one view is rendered at a time, so the callback cannot result
 /// in a recursive call to `render`
+// Only reached through the GUI render path, which is compiled out on a TUI build.
+#[cfg_attr(feature = "tui", allow(dead_code))]
 pub(super) fn render_view<F, R>(window_id: WindowId, view_id: EntityId, render_callback: F) -> R
 where
     F: FnOnce() -> R,
@@ -208,6 +211,7 @@ pub(super) fn windows_with_invalidations() -> Vec<WindowId> {
 /// system.
 ///
 /// Note: This will clear the cache of invalidations for this window.
+#[cfg_attr(feature = "tui", allow(dead_code))]
 pub(super) fn take_invalidations_for_window(window_id: WindowId) -> HashSet<EntityId> {
     with_cache(|cache| {
         let (matching, remainder) = mem::take(&mut cache.invalidations)

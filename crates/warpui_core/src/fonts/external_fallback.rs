@@ -7,7 +7,10 @@ use itertools::Itertools;
 
 use super::{Cache, FamilyId, FontFallbackCache, FontFamilyName, FontId, GlyphId};
 use crate::assets::asset_cache::Asset;
-use crate::{text_layout, Entity, ModelContext, SingletonEntity};
+// Irreducible gated import: supports the cfg'd enum variants below.
+#[cfg(not(feature = "tui"))]
+use crate::text_layout;
+use crate::{Entity, ModelContext, SingletonEntity};
 
 /// Represents a font family that is lazy loaded from the web. i.e. Not a
 /// bundled or system font.
@@ -31,10 +34,14 @@ impl Hash for ExternalFontFamily {
 #[derive(Eq, PartialEq, Hash)]
 pub(crate) enum RequestedFallbackFontSource {
     GlyphForChar((FontId, char)),
+    // Irreducible inline gates: cfg'd variants on a shared enum.
+    #[cfg(not(feature = "tui"))]
     Line(text_layout::CacheKeyValue),
+    #[cfg(not(feature = "tui"))]
     TextFrame(text_layout::CacheKeyValue),
 }
 
+#[cfg_attr(feature = "tui", allow(dead_code))]
 pub(crate) struct FontBytes(pub Vec<u8>);
 
 impl Asset for FontBytes {
@@ -62,6 +69,7 @@ impl FallbackFontModel {
         Self {}
     }
 
+    #[cfg_attr(feature = "tui", allow(dead_code))]
     pub(crate) fn loaded_fallback_font(&mut self, ctx: &mut ModelContext<Self>) {
         ctx.emit(FallbackFontEvent::Loaded);
     }
@@ -106,6 +114,7 @@ impl FontFallbackCache {
     }
 }
 
+#[cfg_attr(feature = "tui", allow(dead_code))]
 impl Cache {
     pub(crate) fn load_fallback_family_from_bytes(
         &mut self,
