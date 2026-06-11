@@ -170,6 +170,11 @@ pub struct AppArgs {
     /// URLs to open in Warp.
     #[arg(hide = true)]
     pub urls: Vec<Url>,
+
+    /// Open the named launch configuration at startup. Matches the `name`
+    /// field of a saved launch configuration, case-insensitively.
+    #[arg(long = "launch-config", value_name = "NAME", env = "WARP_LAUNCH_CONFIG")]
+    pub launch_config: Option<String>,
 }
 
 impl Args {

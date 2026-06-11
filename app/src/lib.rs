@@ -2596,6 +2596,12 @@ fn launch(ctx: &mut warpui::AppContext, app_state: Option<AppState>, launch_mode
                 uri::handle_incoming_uri(url, ctx);
             }
 
+            // Open a launch configuration requested via `--launch-config` or
+            // the WARP_LAUNCH_CONFIG environment variable.
+            if let Some(name) = launch_mode.args().launch_config.as_deref() {
+                uri::open_launch_config_by_name(name, ctx);
+            }
+
             // If, after session restoration and command-line argument handling, we
             // haven't opened any windows, open a new window.
             if ctx.window_ids().count() == 0 {

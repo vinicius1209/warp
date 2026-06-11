@@ -701,6 +701,27 @@ fn validate_launch_config_path(path: &str) -> Option<&str> {
     }
 }
 
+/// Opens the launch configuration whose `name` field matches `name`
+/// (case-insensitively, with or without file extension). Used by the
+/// `--launch-config` startup flag. Returns `false` when no config matches.
+pub fn open_launch_config_by_name(name: &str, ctx: &mut AppContext) -> bool {
+    let configs = load_launch_configs(&crate::user_config::launch_configs_dir());
+    if let Some(config) = find_matching_config(name, &configs) {
+        ctx.dispatch_global_action(
+            "root_view:open_launch_config",
+            &OpenLaunchConfigArg {
+                launch_config: config.clone(),
+                ui_location: LaunchConfigUiLocation::Uri,
+                open_in_active_window: false,
+            },
+        );
+        true
+    } else {
+        log::warn!("--launch-config: no launch configuration named '{name}'");
+        false
+    }
+}
+
 /// Given a config path, find a matching launch config file
 fn find_matching_config<'a>(
     target_path: &str,
