@@ -6881,10 +6881,8 @@ impl Workspace {
                 .next()
                 .unwrap_or(tab_index);
             self.set_active_tab_index(new_active, ctx);
-            MissionRegistry::handle(ctx).update(ctx, |registry, _| {
-                if let Some(mission) = registry.get_mut(mission_index) {
-                    mission.group_id = Some(group_id);
-                }
+            MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
+                registry.set_group_id(mission_index, group_id, ctx);
             });
             ctx.dispatch_global_action("workspace:save_app", ());
             ctx.notify();
@@ -6907,13 +6905,58 @@ impl Workspace {
         });
     }
 
-    /// Handles the `MissionNextStage` action: completes the mission when the
-    /// current stage is the last one, otherwise shows the gate confirmation
-    /// dialog for advancing to the next stage.
+    /// Handles the `MissionNextStage` action: advances the mission hosting
+    /// the active tab's group (so the action targets the mission the user is
+    /// looking at), falling back to the most recently started mission when
+    /// the active tab isn't part of a mission group.
     fn mission_next_stage(&mut self, ctx: &mut ViewContext<Self>) {
+        let mission_index = {
+            let registry = MissionRegistry::as_ref(ctx);
+            self.tabs
+                .get(self.active_tab_index)
+                .and_then(|tab| tab.group_id)
+                .and_then(|group_id| registry.find_by_group(group_id))
+                .or_else(|| registry.find_latest())
+        };
+        self.mission_next_stage_for(mission_index, ctx);
+    }
+
+    /// Handles the `MissionNextStageForGroup` action: advances the mission
+    /// whose stage tabs live in the given tab group.
+    fn mission_next_stage_for_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
+        let mission_index = MissionRegistry::as_ref(ctx).find_by_group(group_id);
+        self.mission_next_stage_for(mission_index, ctx);
+    }
+
+    /// Returns the tab group of the tab whose pane group contains the given
+    /// terminal view, if that tab belongs to a group. Used by per-pane UI
+    /// (e.g. the footer's mission chip) to resolve mission membership.
+    pub(crate) fn tab_group_for_terminal_view(
+        &self,
+        terminal_view_id: EntityId,
+        app: &AppContext,
+    ) -> Option<TabGroupId> {
+        self.tabs
+            .iter()
+            .find(|tab| {
+                tab.pane_group
+                    .as_ref(app)
+                    .contains_terminal_view(terminal_view_id, app)
+            })
+            .and_then(|tab| tab.group_id)
+    }
+
+    /// Completes the mission at `mission_index` when its current stage is the
+    /// last one, otherwise shows the gate confirmation dialog for advancing
+    /// to the next stage.
+    fn mission_next_stage_for(
+        &mut self,
+        mission_index: Option<usize>,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let mission_data = {
             let registry = MissionRegistry::as_ref(ctx);
-            registry.find_latest().and_then(|mission_index| {
+            mission_index.and_then(|mission_index| {
                 registry.get(mission_index).map(|mission| {
                     (
                         mission_index,
@@ -7046,10 +7089,6 @@ impl Workspace {
         {
             log::warn!("Failed to update mission manifest in {mission_dir:?}: {err:?}");
         }
-        MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
-            registry.advance_stage(mission_index, ctx);
-        });
-
         let Some(tab_index) = self.open_mission_stage_tab(mission_index, next_stage, ctx) else {
             return;
         };
@@ -7058,6 +7097,12 @@ impl Workspace {
                 self.move_tab_to_group(tab_index, group_id, ctx);
             }
         }
+        // Advance the registry after the new stage tab has joined the
+        // mission's group, so observers (e.g. footer mission chips) see the
+        // final tab/group state when the change event fires.
+        MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
+            registry.advance_stage(mission_index, ctx);
+        });
         self.focus_active_tab(ctx);
     }
 
@@ -7825,7 +7870,7 @@ impl Workspace {
             return;
         }
 
-        let menu_items = self.tab_group_menu_items(group_id, uses_vertical_tabs(ctx));
+        let menu_items = self.tab_group_menu_items(group_id, uses_vertical_tabs(ctx), ctx);
         ctx.update_view(&self.tab_right_click_menu, |context_menu, view_ctx| {
             context_menu.set_items(menu_items, view_ctx);
         });
@@ -9843,6 +9888,7 @@ impl Workspace {
         &self,
         group_id: TabGroupId,
         is_vertical: bool,
+        app: &AppContext,
     ) -> Vec<MenuItem<WorkspaceAction>> {
         let Some((first, last)) = group_member_index_range(&self.tabs, group_id) else {
             return vec![];
@@ -9918,8 +9964,21 @@ impl Workspace {
             items
         };
 
+        // Offered only when the group hosts an active mission's stage tabs.
+        let mission_section = if MissionRegistry::as_ref(app)
+            .find_by_group(group_id)
+            .is_some()
+        {
+            vec![MenuItemFields::new("Mission: Next Stage")
+                .with_on_select_action(WorkspaceAction::MissionNextStageForGroup(group_id))
+                .into_item()]
+        } else {
+            vec![]
+        };
+
         let mut menu_items = vec![];
         for section_items in [
+            mission_section,
             vec![
                 MenuItemFields::new("Ungroup tabs")
                     .with_on_select_action(WorkspaceAction::UngroupTabs(group_id))
@@ -23222,6 +23281,7 @@ impl TypedActionView for Workspace {
             OpenLaunchConfigSaveModal => self.open_launch_config_save_modal(ctx),
             OpenStartMissionModal => self.open_start_mission_modal(ctx),
             MissionNextStage => self.mission_next_stage(ctx),
+            MissionNextStageForGroup(group_id) => self.mission_next_stage_for_group(*group_id, ctx),
             ActivateNextTab => self.activate_next_tab(ctx),
             ActivateLastTab => self.activate_last_tab(ctx),
             CyclePrevSession => self.cycle_prev_session(ctx),

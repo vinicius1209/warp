@@ -65,6 +65,7 @@ use crate::context_chips::display_chip::{DisplayChip, DisplayChipConfig, PromptC
 use crate::context_chips::prompt_type::PromptType;
 use crate::context_chips::{self, ContextChipKind};
 use crate::features::FeatureFlag;
+use crate::missions::MissionRegistry;
 use crate::network::NetworkStatus;
 use crate::send_telemetry_from_ctx;
 #[cfg(feature = "voice_input")]
@@ -111,9 +112,7 @@ use crate::view_components::DismissibleToast;
 #[cfg(not(target_family = "wasm"))]
 use crate::view_components::ToastLink;
 use crate::workspace::view::TOGGLE_PROJECT_EXPLORER_BINDING_NAME;
-use crate::workspace::ToastStack;
-#[cfg(not(target_family = "wasm"))]
-use crate::workspace::WorkspaceAction;
+use crate::workspace::{ToastStack, WorkspaceAction, WorkspaceRegistry};
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
 const ENABLE_NLD_TOOLTIP: &str = "Enable terminal command autodetection";
@@ -242,6 +241,12 @@ pub struct AgentInputFooter {
     // availability. Per-conversation eligibility is enforced by
     // `Workspace::start_local_to_cloud_handoff`.
     handoff_to_cloud_button: ViewHandle<ActionButton>,
+
+    // Mission chip (Cockpit Missions). Visible when this pane's tab belongs
+    // to a tab group hosting an active mission; clicking advances the
+    // mission to its next stage. Synced from `MissionRegistry` events.
+    mission_button: ViewHandle<ActionButton>,
+    mission_chip_visible: bool,
 
     // CLI agent voice input state (self-contained, bypasses editor voice flow).
     #[cfg(feature = "voice_input")]
@@ -420,6 +425,20 @@ impl AgentInputFooter {
                 .with_tooltip_alignment(TooltipAlignment::Left)
                 .on_click(|ctx| {
                     ctx.dispatch_typed_action(AgentInputFooterAction::OpenCodingAgentSettings);
+                })
+        });
+
+        // Mission chip: label is synced from the registry (current stage name
+        // and progress); clicking advances the active tab's mission, which is
+        // this pane's mission since the chip only renders on visible panes.
+        let mission_button = ctx.add_typed_action_view(|_ctx| {
+            ActionButton::new("", AgentInputButtonTheme)
+                .with_icon(Icon::Rocket)
+                .with_tooltip("Mission: next stage")
+                .with_size(cli_button_size)
+                .with_tooltip_alignment(TooltipAlignment::Left)
+                .on_click(|ctx| {
+                    ctx.dispatch_typed_action(WorkspaceAction::MissionNextStage);
                 })
         });
 
@@ -745,6 +764,12 @@ impl AgentInputFooter {
             me.sync_remote_control_button(ctx);
         });
 
+        // Keep the mission chip's visibility and label in sync with the
+        // active missions registry.
+        ctx.subscribe_to_model(&MissionRegistry::handle(ctx), |me, _, _, ctx| {
+            me.sync_mission_button(ctx);
+        });
+
         let prompt_for_session_settings = prompt.clone();
         ctx.subscribe_to_model(
             &SessionSettings::handle(ctx),
@@ -862,6 +887,8 @@ impl AgentInputFooter {
             display_chip_config,
             fast_forward_button,
             handoff_to_cloud_button,
+            mission_button,
+            mission_chip_visible: false,
             #[cfg(feature = "voice_input")]
             cli_voice_input_state: CLIVoiceInputState::default(),
             #[cfg(feature = "voice_input")]
@@ -878,6 +905,7 @@ impl AgentInputFooter {
         };
         me.sync_fast_forward_button(ctx);
         me.sync_remote_control_button(ctx);
+        me.sync_mission_button(ctx);
         me.update_context_window_button(ctx);
         me.update_display_chips(&prompt, ctx);
         me.update_ftu_callout_render_state(ctx);
@@ -1585,6 +1613,12 @@ impl AgentInputFooter {
             }
         }
 
+        // Mission chip: always rendered (not configurable) when this pane's
+        // tab is part of an active mission's tab group.
+        if self.mission_chip_visible {
+            left_buttons.add_child(ChildView::new(&self.mission_button).finish());
+        }
+
         let mut right_buttons = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_main_axis_size(MainAxisSize::Min)
@@ -2007,6 +2041,47 @@ impl AgentInputFooter {
             button.set_disabled(login_required, ctx);
             button.set_tooltip(Some(tooltip), ctx);
         });
+    }
+
+    /// Label for the mission chip when this pane's tab belongs to a tab
+    /// group hosting an active mission, e.g. "Executor (2/2)". `None` hides
+    /// the chip.
+    fn mission_chip_label(&self, app: &AppContext) -> Option<String> {
+        let registry = MissionRegistry::as_ref(app);
+        if registry.missions().is_empty() {
+            return None;
+        }
+        let group_id = WorkspaceRegistry::as_ref(app)
+            .all_workspaces(app)
+            .into_iter()
+            .find_map(|(_, workspace)| {
+                workspace
+                    .as_ref(app)
+                    .tab_group_for_terminal_view(self.terminal_view_id, app)
+            })?;
+        let mission = registry
+            .find_by_group(group_id)
+            .and_then(|index| registry.get(index))?;
+        let stage = mission.stages.get(mission.current_stage)?;
+        Some(format!(
+            "{} ({}/{})",
+            stage.name,
+            mission.current_stage + 1,
+            mission.stages.len()
+        ))
+    }
+
+    /// Syncs the mission chip's visibility and label with the
+    /// `MissionRegistry`.
+    fn sync_mission_button(&mut self, ctx: &mut ViewContext<Self>) {
+        let label = self.mission_chip_label(ctx);
+        self.mission_chip_visible = label.is_some();
+        if let Some(label) = label {
+            self.mission_button.update(ctx, |button, ctx| {
+                button.set_label(label, ctx);
+            });
+        }
+        ctx.notify();
     }
 
     fn update_context_window_button(&mut self, ctx: &mut ViewContext<Self>) {

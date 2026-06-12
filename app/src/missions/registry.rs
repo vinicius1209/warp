@@ -46,14 +46,23 @@ impl MissionRegistry {
         self.missions.get(index)
     }
 
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut ActiveMission> {
-        self.missions.get_mut(index)
-    }
-
     /// Advances the mission at `index` to its next stage.
     pub fn advance_stage(&mut self, index: usize, ctx: &mut ModelContext<Self>) {
         if let Some(mission) = self.missions.get_mut(index) {
             mission.current_stage += 1;
+            ctx.emit(MissionRegistryEvent::Changed);
+        }
+    }
+
+    /// Binds the mission at `index` to the tab group hosting its stage tabs.
+    pub fn set_group_id(
+        &mut self,
+        index: usize,
+        group_id: TabGroupId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if let Some(mission) = self.missions.get_mut(index) {
+            mission.group_id = Some(group_id);
             ctx.emit(MissionRegistryEvent::Changed);
         }
     }
@@ -73,6 +82,14 @@ impl MissionRegistry {
     /// Index of the most recently registered mission, for v1 single-mission flows.
     pub fn find_latest(&self) -> Option<usize> {
         self.missions.len().checked_sub(1)
+    }
+
+    /// Index of the mission whose stage tabs live in the given tab group.
+    /// The most recently registered match wins.
+    pub fn find_by_group(&self, group_id: TabGroupId) -> Option<usize> {
+        self.missions
+            .iter()
+            .rposition(|mission| mission.group_id == Some(group_id))
     }
 }
 

@@ -199,6 +199,10 @@ pub enum WorkspaceAction {
     /// Advances the active mission past its current stage, showing the
     /// stage's human gate confirmation first when one is defined.
     MissionNextStage,
+    /// Advances the mission whose stage tabs live in the given tab group
+    /// past its current stage, showing the stage's human gate confirmation
+    /// first when one is defined.
+    MissionNextStageForGroup(TabGroupId),
     /// Selects every tab between the active tab and the shift-clicked row (inclusive).
     ShiftSelectTabRange {
         locator: PaneViewLocator,
@@ -868,6 +872,7 @@ impl WorkspaceAction {
             | MoveTabToGroup { .. }
             | RemoveTabFromGroup(_)
             | MissionNextStage
+            | MissionNextStageForGroup(_)
             | NewTabGroupFromSelectedTabs
             | MoveSelectedTabsToGroup { .. }
             | RemoveSelectedTabsFromGroup
