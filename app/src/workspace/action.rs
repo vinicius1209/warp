@@ -194,6 +194,11 @@ pub enum WorkspaceAction {
     },
     /// Removes the tab at the given index from its current group.
     RemoveTabFromGroup(usize),
+    /// Opens the "Start Mission" modal (Cockpit Missions).
+    OpenStartMissionModal,
+    /// Advances the active mission past its current stage, showing the
+    /// stage's human gate confirmation first when one is defined.
+    MissionNextStage,
     /// Selects every tab between the active tab and the shift-clicked row (inclusive).
     ShiftSelectTabRange {
         locator: PaneViewLocator,
@@ -862,6 +867,7 @@ impl WorkspaceAction {
             | NewTabGroupFromTab(_)
             | MoveTabToGroup { .. }
             | RemoveTabFromGroup(_)
+            | MissionNextStage
             | NewTabGroupFromSelectedTabs
             | MoveSelectedTabsToGroup { .. }
             | RemoveSelectedTabsFromGroup
@@ -930,6 +936,7 @@ impl WorkspaceAction {
             | ToggleErrorUnderlining
             | ToggleSyntaxHighlighting
             | OpenLaunchConfigSaveModal
+            | OpenStartMissionModal
             | ToggleTabRightClickMenu { .. }
             | ToggleTabSelectionRightClickMenu { .. }
             | ToggleTabGroupRightClickMenu { .. }

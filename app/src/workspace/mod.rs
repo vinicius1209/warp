@@ -1024,6 +1024,18 @@ pub fn init(app: &mut AppContext) {
         .with_custom_action(CustomAction::SaveCurrentConfig)
         .with_enabled(|| ContextFlag::LaunchConfigurations.is_enabled()),
         EditableBinding::new(
+            "workspace:start_mission",
+            "Start Mission…",
+            WorkspaceAction::OpenStartMissionModal,
+        )
+        .with_context_predicate(id!("Workspace")),
+        EditableBinding::new(
+            "workspace:mission_next_stage",
+            "Mission: Next Stage",
+            WorkspaceAction::MissionNextStage,
+        )
+        .with_context_predicate(id!("Workspace")),
+        EditableBinding::new(
             // If you rename this name, please update the name in command_palette/action/data_source.rs
             "workspace:search_drive",
             "Search Warp Drive",

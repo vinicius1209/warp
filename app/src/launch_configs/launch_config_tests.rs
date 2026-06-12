@@ -116,6 +116,9 @@ fn test_config_from_snapshot_flattens_single_pane() {
             commands: vec![],
             pane_mode: PaneMode::Terminal,
             shell: None,
+            harness: None,
+            prompt: None,
+            prompt_file: None,
         },
     )
 }
@@ -189,6 +192,9 @@ fn test_config_from_snapshot_filters_panes() {
                     commands: vec![],
                     pane_mode: PaneMode::Terminal,
                     shell: None,
+                    harness: None,
+                    prompt: None,
+                    prompt_file: None,
                 },
                 PaneTemplateType::PaneTemplate {
                     is_focused: Some(false),
@@ -196,6 +202,9 @@ fn test_config_from_snapshot_filters_panes() {
                     commands: vec![],
                     pane_mode: PaneMode::Terminal,
                     shell: None,
+                    harness: None,
+                    prompt: None,
+                    prompt_file: None,
                 },
             ]
         }

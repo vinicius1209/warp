@@ -2362,6 +2362,9 @@ fn test_initial_widths_are_computed_correctly() {
                     commands: vec![],
                     pane_mode: PaneMode::Terminal,
                     shell: None,
+                    harness: None,
+                    prompt: None,
+                    prompt_file: None,
                 }
             };
         }
@@ -2937,6 +2940,9 @@ fn test_pane_focus_does_not_have_an_infinite_event_loop() {
                         commands: vec![],
                         pane_mode: PaneMode::Terminal,
                         shell: None,
+                        harness: None,
+                        prompt: None,
+                        prompt_file: None,
                     },
                     PaneTemplateType::PaneTemplate {
                         is_focused: None,
@@ -2944,6 +2950,9 @@ fn test_pane_focus_does_not_have_an_infinite_event_loop() {
                         commands: vec![],
                         pane_mode: PaneMode::Terminal,
                         shell: None,
+                        harness: None,
+                        prompt: None,
+                        prompt_file: None,
                     },
                 ],
             }),
@@ -3063,6 +3072,9 @@ fn test_focused_pane_is_synchronized_with_application_focus() {
                     commands: vec![],
                     pane_mode: PaneMode::Terminal,
                     shell: None,
+                    harness: None,
+                    prompt: None,
+                    prompt_file: None,
                 },
                 PaneTemplateType::PaneTemplate {
                     is_focused: None,
@@ -3070,6 +3082,9 @@ fn test_focused_pane_is_synchronized_with_application_focus() {
                     commands: vec![],
                     pane_mode: PaneMode::Terminal,
                     shell: None,
+                    harness: None,
+                    prompt: None,
+                    prompt_file: None,
                 },
             ],
         });

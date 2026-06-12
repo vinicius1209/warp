@@ -264,9 +264,12 @@ use crate::editor::{
 use crate::env_vars::manager::{EnvVarCollectionManager, EnvVarCollectionSource};
 use crate::env_vars::CloudEnvVarCollection;
 use crate::experiments::{BlockOnboarding, Experiment};
-use crate::launch_configs::launch_config::WindowTemplate;
+use crate::launch_configs::launch_config::{PaneMode, PaneTemplateType, WindowTemplate};
 use crate::launch_configs::save_modal::{LaunchConfigModalEvent, LaunchConfigSaveModal};
 use crate::menu::{Event as MenuEvent, Menu, MenuItem, MenuItemFields, MenuSelectionSource};
+use crate::missions::gate_dialog::{MissionGateDialog, MissionGateDialogEvent};
+use crate::missions::start_mission_modal::{StartMissionModal, StartMissionModalEvent};
+use crate::missions::{self, ActiveMission, MissionRegistry, MissionTemplate, StageStatus};
 use crate::modal::{Modal, ModalEvent, ModalViewState};
 use crate::network::{NetworkStatus, NetworkStatusEvent};
 use crate::notebooks::manager::{NotebookManager, NotebookSource};
@@ -1027,6 +1030,11 @@ pub struct Workspace {
     pending_session_config_tab_config_chip_tutorial:
         Option<PendingSessionConfigTabConfigChipTutorial>,
     new_worktree_modal: ModalViewState<Modal<NewWorktreeModal>>,
+    start_mission_modal: ModalViewState<Modal<StartMissionModal>>,
+    mission_gate_dialog: ViewHandle<MissionGateDialog>,
+    /// Registry index of the mission awaiting gate confirmation, set while
+    /// the mission gate dialog is open.
+    mission_gate_pending_index: Option<usize>,
     close_session_confirmation_dialog: ViewHandle<CloseSessionConfirmationDialog>,
     rewind_confirmation_dialog: ViewHandle<RewindConfirmationDialog>,
     delete_conversation_confirmation_dialog: ViewHandle<DeleteConversationConfirmationDialog>,
@@ -2102,6 +2110,44 @@ impl Workspace {
         ModalViewState::new(modal)
     }
 
+    fn build_start_mission_modal(
+        ctx: &mut ViewContext<Self>,
+    ) -> ModalViewState<Modal<StartMissionModal>> {
+        let body = ctx.add_typed_action_view(StartMissionModal::new);
+        ctx.subscribe_to_view(&body, |me, _, event, ctx| {
+            me.handle_start_mission_modal_body_event(event, ctx);
+        });
+        let modal = ctx.add_typed_action_view(|ctx| {
+            // No built-in title — the body renders its own header (bold
+            // title + X close + ESC badge), like the new-worktree modal.
+            Modal::new(None, body, ctx)
+                .with_modal_style(UiComponentStyles {
+                    width: Some(460.),
+                    height: Some(480.),
+                    ..Default::default()
+                })
+                .with_body_style(UiComponentStyles {
+                    padding: Some(Coords::uniform(0.)),
+                    height: Some(480.),
+                    background: Some(ElementFill::None),
+                    ..Default::default()
+                })
+                .with_dismiss_on_click()
+        });
+        ctx.subscribe_to_view(&modal, |me, _, event, ctx| {
+            me.handle_start_mission_modal_event(event, ctx);
+        });
+        ModalViewState::new(modal)
+    }
+
+    fn build_mission_gate_dialog(ctx: &mut ViewContext<Self>) -> ViewHandle<MissionGateDialog> {
+        let dialog = ctx.add_typed_action_view(|_| MissionGateDialog::new());
+        ctx.subscribe_to_view(&dialog, |me, _, event, ctx| {
+            me.handle_mission_gate_dialog_event(event, ctx);
+        });
+        dialog
+    }
+
     fn build_remove_tab_config_confirmation_dialog(
         ctx: &mut ViewContext<Self>,
     ) -> ViewHandle<RemoveTabConfigConfirmationDialog> {
@@ -2883,6 +2929,8 @@ impl Workspace {
 
         let tab_config_params_modal = Self::build_tab_config_params_modal(ctx);
         let new_worktree_modal = Self::build_new_worktree_modal(ctx);
+        let start_mission_modal = Self::build_start_mission_modal(ctx);
+        let mission_gate_dialog = Self::build_mission_gate_dialog(ctx);
 
         let session_config_modal = Self::build_session_config_modal(ctx);
 
@@ -3272,6 +3320,9 @@ impl Workspace {
             show_session_config_tab_config_chip: false,
             pending_session_config_tab_config_chip_tutorial: None,
             new_worktree_modal,
+            start_mission_modal,
+            mission_gate_dialog,
+            mission_gate_pending_index: None,
             close_session_confirmation_dialog,
             rewind_confirmation_dialog,
             delete_conversation_confirmation_dialog,
@@ -6687,6 +6738,382 @@ impl Workspace {
                 tab.selected_color = SelectedTabColor::Color(color);
             }
         }
+    }
+
+    /// Opens the Start Mission modal, prefilling the project directory with
+    /// the active terminal session's cwd when available.
+    fn open_start_mission_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.close_palette(true, None, ctx); // close palettes if any are open
+        let cwd = self
+            .active_session_view(ctx)
+            .and_then(|view| view.as_ref(ctx).pwd());
+        self.start_mission_modal.view.update(ctx, |modal, ctx| {
+            modal.body().update(ctx, |body, ctx| {
+                body.on_open(cwd, ctx);
+            });
+        });
+        self.start_mission_modal.open();
+        self.current_workspace_state.is_start_mission_modal_open = true;
+        ctx.focus(&self.start_mission_modal.view);
+        ctx.notify();
+    }
+
+    fn close_start_mission_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        self.current_workspace_state.is_start_mission_modal_open = false;
+        self.start_mission_modal.close();
+        self.start_mission_modal.view.update(ctx, |modal, ctx| {
+            modal.body().update(ctx, |body, ctx| {
+                body.on_close(ctx);
+            });
+        });
+        ctx.notify();
+    }
+
+    fn handle_start_mission_modal_event(
+        &mut self,
+        event: &ModalEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            ModalEvent::Close => self.close_start_mission_modal(ctx),
+        }
+    }
+
+    fn handle_start_mission_modal_body_event(
+        &mut self,
+        event: &StartMissionModalEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            StartMissionModalEvent::Confirmed {
+                project_dir,
+                template,
+                briefing,
+            } => {
+                let project_dir = PathBuf::from(project_dir);
+                let template = template.clone();
+                let briefing = briefing.clone();
+                self.close_start_mission_modal(ctx);
+                self.start_mission(project_dir, template, briefing, ctx);
+            }
+            StartMissionModalEvent::Closed => self.close_start_mission_modal(ctx),
+        }
+    }
+
+    /// Starts a new Cockpit Mission: scaffolds the on-disk `.cockpit/`
+    /// structure, registers the mission, opens the first stage's tab, and
+    /// (when `GroupedTabs` is enabled) creates a named tab group for it.
+    fn start_mission(
+        &mut self,
+        project_dir: PathBuf,
+        template: MissionTemplate,
+        briefing: String,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let stages = missions::effective_stages(&template, &project_dir);
+        if stages.is_empty() {
+            log::error!("Mission template {:?} has no stages", template.name);
+            self.toast_stack.update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::error(format!(
+                        "Mission template '{}' has no stages",
+                        template.name
+                    )),
+                    ctx,
+                );
+            });
+            return;
+        }
+        let scaffolded = match missions::scaffold_mission(&project_dir, &template, &briefing) {
+            Ok(scaffolded) => scaffolded,
+            Err(err) => {
+                log::error!("Failed to scaffold mission in {project_dir:?}: {err:?}");
+                self.toast_stack.update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::error(format!("Failed to start mission: {err}")),
+                        ctx,
+                    );
+                });
+                return;
+            }
+        };
+
+        let mission = ActiveMission {
+            slug: scaffolded.slug.clone(),
+            template_name: template.name.clone(),
+            project_dir,
+            mission_dir: scaffolded.mission_dir.clone(),
+            stages,
+            current_stage: 0,
+            default_harness: "claude".to_string(),
+            group_id: None,
+        };
+        let mission_index = MissionRegistry::handle(ctx)
+            .update(ctx, |registry, ctx| registry.register(mission, ctx));
+
+        let Some(tab_index) = self.open_mission_stage_tab(mission_index, 0, ctx) else {
+            return;
+        };
+
+        if FeatureFlag::GroupedTabs.is_enabled() {
+            // Create the mission's named group directly instead of dispatching
+            // NewTabGroupFromTab, which would open the inline rename editor.
+            // The new tab inherits the previously-active tab's group, so
+            // explicitly overwrite its membership, keeping the old group's
+            // run contiguous (mirrors `new_tab_group_from_tab`).
+            let previous_group_id = self.tabs.get(tab_index).and_then(|tab| tab.group_id);
+            let group = TabGroup {
+                name: Some(format!("Mission: {}", template.name)),
+                ..TabGroup::new()
+            };
+            let group_id = group.id;
+            self.tab_groups.insert(group_id, group);
+            if let Some(tab) = self.tabs.get_mut(tab_index) {
+                tab.group_id = Some(group_id);
+            }
+            if let Some(previous_group_id) = previous_group_id {
+                if let Some(last) = group_member_indices(&self.tabs, previous_group_id).last() {
+                    self.move_tab_to_index(tab_index, last + 1, ctx);
+                }
+                self.prune_empty_tab_group(previous_group_id, ctx);
+            }
+            let new_active = group_member_indices(&self.tabs, group_id)
+                .next()
+                .unwrap_or(tab_index);
+            self.set_active_tab_index(new_active, ctx);
+            MissionRegistry::handle(ctx).update(ctx, |registry, _| {
+                if let Some(mission) = registry.get_mut(mission_index) {
+                    mission.group_id = Some(group_id);
+                }
+            });
+            ctx.dispatch_global_action("workspace:save_app", ());
+            ctx.notify();
+        }
+
+        if let Err(err) =
+            missions::update_manifest_stage(&scaffolded.mission_dir, 0, StageStatus::Running)
+        {
+            log::warn!(
+                "Failed to mark mission stage 0 as running in {:?}: {err:?}",
+                scaffolded.mission_dir
+            );
+        }
+
+        self.toast_stack.update(ctx, |toast_stack, ctx| {
+            toast_stack.add_ephemeral_toast(
+                DismissibleToast::success(format!("Missão iniciada: {}", scaffolded.slug)),
+                ctx,
+            );
+        });
+    }
+
+    /// Handles the `MissionNextStage` action: completes the mission when the
+    /// current stage is the last one, otherwise shows the gate confirmation
+    /// dialog for advancing to the next stage.
+    fn mission_next_stage(&mut self, ctx: &mut ViewContext<Self>) {
+        let mission_data = {
+            let registry = MissionRegistry::as_ref(ctx);
+            registry.find_latest().and_then(|mission_index| {
+                registry.get(mission_index).map(|mission| {
+                    (
+                        mission_index,
+                        mission.current_stage,
+                        mission.stages.len(),
+                        mission.mission_dir.clone(),
+                        mission.project_dir.clone(),
+                        mission.stages.get(mission.current_stage).cloned(),
+                        mission
+                            .stages
+                            .get(mission.current_stage + 1)
+                            .map(|stage| stage.name.clone()),
+                    )
+                })
+            })
+        };
+        let Some((
+            mission_index,
+            current_stage,
+            stage_count,
+            mission_dir,
+            project_dir,
+            current,
+            next_name,
+        )) = mission_data
+        else {
+            self.toast_stack.update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::default("Nenhuma missão ativa".to_string()),
+                    ctx,
+                );
+            });
+            return;
+        };
+        let Some(current) = current else {
+            log::error!("Mission {mission_index} has no stage at index {current_stage}");
+            return;
+        };
+
+        // Last stage: mark it done and complete the mission.
+        if current_stage + 1 >= stage_count {
+            if let Err(err) =
+                missions::update_manifest_stage(&mission_dir, current_stage, StageStatus::Done)
+            {
+                log::warn!("Failed to update mission manifest in {mission_dir:?}: {err:?}");
+            }
+            MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
+                registry.remove(mission_index, ctx);
+            });
+            self.toast_stack.update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::success("Missão concluída 🎉".to_string()),
+                    ctx,
+                );
+            });
+            return;
+        }
+
+        // Show the human gate before advancing. Gate text supports the same
+        // placeholders as stage prompts (e.g. `{{mission_dir}}`).
+        let briefing = std::fs::read_to_string(mission_dir.join("brief.md")).unwrap_or_default();
+        let message = match &current.gate {
+            Some(gate) => {
+                missions::render_stage_prompt(gate, &briefing, &mission_dir, &project_dir)
+            }
+            None => {
+                let next_name = next_name.unwrap_or_default();
+                format!(
+                    "Estágio '{}' concluído. Avançar para '{next_name}'?",
+                    current.name
+                )
+            }
+        };
+        self.mission_gate_dialog.update(ctx, |dialog, _| {
+            dialog.set_message(message);
+        });
+        self.mission_gate_pending_index = Some(mission_index);
+        self.current_workspace_state.is_mission_gate_dialog_open = true;
+        ctx.focus(&self.mission_gate_dialog);
+        ctx.notify();
+    }
+
+    fn handle_mission_gate_dialog_event(
+        &mut self,
+        event: &MissionGateDialogEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.current_workspace_state.is_mission_gate_dialog_open = false;
+        ctx.notify();
+        match event {
+            MissionGateDialogEvent::Confirm => {
+                if let Some(mission_index) = self.mission_gate_pending_index.take() {
+                    self.advance_mission_stage(mission_index, ctx);
+                }
+            }
+            MissionGateDialogEvent::Cancel => {
+                self.mission_gate_pending_index = None;
+                self.focus_active_tab(ctx);
+            }
+        }
+    }
+
+    /// Advances the mission past its current stage: updates the manifest,
+    /// bumps the registry, and opens the next stage's tab in the mission's
+    /// tab group.
+    fn advance_mission_stage(&mut self, mission_index: usize, ctx: &mut ViewContext<Self>) {
+        let mission_data = {
+            let registry = MissionRegistry::as_ref(ctx);
+            registry.get(mission_index).map(|mission| {
+                (
+                    mission.current_stage,
+                    mission.mission_dir.clone(),
+                    mission.group_id,
+                )
+            })
+        };
+        let Some((current_stage, mission_dir, group_id)) = mission_data else {
+            log::error!("advance_mission_stage: no mission at index {mission_index}");
+            return;
+        };
+        let next_stage = current_stage + 1;
+
+        if let Err(err) =
+            missions::update_manifest_stage(&mission_dir, current_stage, StageStatus::Done)
+        {
+            log::warn!("Failed to update mission manifest in {mission_dir:?}: {err:?}");
+        }
+        if let Err(err) =
+            missions::update_manifest_stage(&mission_dir, next_stage, StageStatus::Running)
+        {
+            log::warn!("Failed to update mission manifest in {mission_dir:?}: {err:?}");
+        }
+        MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
+            registry.advance_stage(mission_index, ctx);
+        });
+
+        let Some(tab_index) = self.open_mission_stage_tab(mission_index, next_stage, ctx) else {
+            return;
+        };
+        if FeatureFlag::GroupedTabs.is_enabled() {
+            if let Some(group_id) = group_id.filter(|id| self.tab_groups.contains_key(id)) {
+                self.move_tab_to_group(tab_index, group_id, ctx);
+            }
+        }
+        self.focus_active_tab(ctx);
+    }
+
+    /// Opens a new tab running the given mission stage's harness, seeded with
+    /// the stage's rendered prompt. Returns the new tab's index, or `None`
+    /// when the mission/stage can't be resolved (no tab is opened).
+    fn open_mission_stage_tab(
+        &mut self,
+        mission_index: usize,
+        stage_index: usize,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<usize> {
+        let mission_data = {
+            let registry = MissionRegistry::as_ref(ctx);
+            registry.get(mission_index).and_then(|mission| {
+                mission.stages.get(stage_index).map(|stage| {
+                    (
+                        mission.slug.clone(),
+                        mission.project_dir.clone(),
+                        mission.mission_dir.clone(),
+                        mission.default_harness.clone(),
+                        stage.clone(),
+                    )
+                })
+            })
+        };
+        let Some((slug, project_dir, mission_dir, default_harness, stage)) = mission_data else {
+            log::error!(
+                "open_mission_stage_tab: mission {mission_index} has no stage {stage_index}"
+            );
+            return None;
+        };
+
+        // `render_stage_prompt` needs the briefing; read it back from the
+        // mission's brief.md (it was written at scaffold time).
+        let briefing = std::fs::read_to_string(mission_dir.join("brief.md")).unwrap_or_default();
+        let prompt =
+            missions::render_stage_prompt(&stage.prompt, &briefing, &mission_dir, &project_dir);
+
+        let pane_template = PaneTemplateType::PaneTemplate {
+            cwd: project_dir,
+            commands: Vec::new(),
+            is_focused: Some(true),
+            pane_mode: PaneMode::Terminal,
+            shell: None,
+            harness: Some(stage.harness.clone().unwrap_or(default_harness)),
+            prompt: Some(prompt),
+            prompt_file: None,
+        };
+        self.add_tab_with_pane_layout(
+            PanesLayout::Template(pane_template),
+            Arc::new(HashMap::new()),
+            Some(format!("{} — {}", stage.name, slug)),
+            ctx,
+        );
+        Some(self.active_tab_index)
     }
 
     /// Opens a tab config, showing the param-fill modal when the config has parameters,
@@ -22793,6 +23220,8 @@ impl TypedActionView for Workspace {
             ActivateTabByNumber(num) => self.activate_tab(num.saturating_sub(1), ctx),
             ActivatePrevTab => self.activate_prev_tab(ctx),
             OpenLaunchConfigSaveModal => self.open_launch_config_save_modal(ctx),
+            OpenStartMissionModal => self.open_start_mission_modal(ctx),
+            MissionNextStage => self.mission_next_stage(ctx),
             ActivateNextTab => self.activate_next_tab(ctx),
             ActivateLastTab => self.activate_last_tab(ctx),
             CyclePrevSession => self.cycle_prev_session(ctx),
@@ -25820,6 +26249,10 @@ impl View for Workspace {
             stack.add_child(self.tab_config_params_modal.render());
         }
 
+        if self.start_mission_modal.is_open() {
+            stack.add_child(self.start_mission_modal.render());
+        }
+
         if self.session_config_modal.is_open() {
             stack.add_child(self.session_config_modal.render());
         }
@@ -26089,6 +26522,18 @@ impl View for Workspace {
         {
             stack.add_positioned_overlay_child(
                 ChildView::new(&self.rewind_confirmation_dialog).finish(),
+                OffsetPositioning::offset_from_parent(
+                    Vector2F::zero(),
+                    ParentOffsetBounds::WindowByPosition,
+                    ParentAnchor::Center,
+                    ChildAnchor::Center,
+                ),
+            );
+        }
+
+        if self.current_workspace_state.is_mission_gate_dialog_open {
+            stack.add_positioned_overlay_child(
+                ChildView::new(&self.mission_gate_dialog).finish(),
                 OffsetPositioning::offset_from_parent(
                     Vector2F::zero(),
                     ParentOffsetBounds::WindowByPosition,
