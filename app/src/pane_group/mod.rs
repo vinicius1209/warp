@@ -1315,6 +1315,9 @@ impl PaneGroup {
                 is_focused,
                 pane_mode,
                 shell,
+                harness,
+                prompt,
+                prompt_file,
             } => {
                 let uuid = Uuid::new_v4();
 
@@ -1351,11 +1354,39 @@ impl PaneGroup {
                     ),
                 };
 
-                let has_commands = !commands.is_empty();
+                // Mission panes: synthesize the harness CLI invocation, seeded
+                // with the briefing (`prompt_file` contents — e.g. a spec —
+                // followed by `prompt`). Runs after any setup `commands`.
+                let mission_command = harness.as_deref().and_then(|harness_name| {
+                    let mut briefing = String::new();
+                    if let Some(path) = &prompt_file {
+                        let expanded = shellexpand::tilde(path).into_owned();
+                        match std::fs::read_to_string(&expanded) {
+                            Ok(contents) => {
+                                briefing.push_str(&contents);
+                                briefing.push_str("\n\n");
+                            }
+                            Err(err) => log::warn!(
+                                "mission pane: couldn't read prompt_file '{expanded}': {err}"
+                            ),
+                        }
+                    }
+                    briefing.push_str(prompt.as_deref().unwrap_or_default());
+                    let command =
+                        launch_config::mission_harness_command(harness_name, briefing.trim());
+                    if command.is_none() {
+                        log::warn!("mission pane: unsupported harness '{harness_name}'");
+                    }
+                    command
+                });
+
+                let mut command_queue: Vec<String> =
+                    commands.into_iter().map(|cmd| cmd.exec).collect();
+                command_queue.extend(mission_command);
+                let has_commands = !command_queue.is_empty();
 
                 // Runs saved commands on start (terminal and agent modes only).
                 if has_commands && !matches!(pane_mode, PaneMode::Cloud) {
-                    let command_queue = commands.into_iter().map(|cmd| cmd.exec).collect();
                     view.update(ctx, |terminal, ctx| {
                         terminal.set_pending_command_queue(command_queue, ctx);
                     });

@@ -106,6 +106,18 @@ pub enum PaneTemplateType {
         /// Sourced from the `shell` field of a tab config pane node.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         shell: Option<String>,
+        /// Mission pane: CLI agent harness to launch in this pane, seeded
+        /// with [`prompt`]/[`prompt_file`]. One of `"claude"`, `"opencode"`,
+        /// `"codex"`, `"agy"`. Runs after any `commands`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        harness: Option<String>,
+        /// Initial briefing prompt for this pane's harness.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        prompt: Option<String>,
+        /// Path (tilde-expanded) to a file — e.g. a mission spec — whose
+        /// contents are prepended to [`prompt`].
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        prompt_file: Option<String>,
     },
     PaneBranchTemplate {
         split_direction: SplitDirection,
@@ -144,6 +156,9 @@ impl TryFrom<PaneNodeSnapshot> for PaneTemplateType {
                     is_focused: Some(leaf.is_focused),
                     pane_mode: PaneMode::Terminal,
                     shell: None,
+                    harness: None,
+                    prompt: None,
+                    prompt_file: None,
                 }),
                 // Currently, notebook panes cannot be saved in launch configurations.
                 LeafContents::Notebook(_)
@@ -216,6 +231,24 @@ impl From<StateSplitDirection> for SplitDirection {
     }
 }
 
+/// Builds the shell command that launches `harness` in a Mission pane,
+/// seeded with `prompt` in interactive mode. Returns `None` for harness
+/// names that aren't supported as local child harnesses.
+pub fn mission_harness_command(harness: &str, prompt: &str) -> Option<String> {
+    use warp_cli::agent::Harness;
+
+    let harness = Harness::parse_local_child_harness(harness)?;
+    let quoted = shell_words::quote(prompt);
+    Some(match harness {
+        Harness::Claude => format!("claude {quoted}"),
+        Harness::OpenCode => format!("opencode --prompt {quoted}"),
+        Harness::Codex => format!("codex {quoted}"),
+        Harness::Agy => format!("agy -i {quoted}"),
+        // parse_local_child_harness only returns the variants above.
+        Harness::Oz | Harness::Gemini | Harness::Unknown => return None,
+    })
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct CommandTemplate {
     pub exec: String,
@@ -245,6 +278,9 @@ pub fn make_mock_single_window_launch_config() -> LaunchConfig {
                         commands: vec!["echo test_command".into()],
                         pane_mode: PaneMode::Terminal,
                         shell: None,
+                        harness: None,
+                        prompt: None,
+                        prompt_file: None,
                     },
                     color: None,
                 },
@@ -256,6 +292,9 @@ pub fn make_mock_single_window_launch_config() -> LaunchConfig {
                         commands: vec!["echo test_command_on_another_tab".into()],
                         pane_mode: PaneMode::Terminal,
                         shell: None,
+                        harness: None,
+                        prompt: None,
+                        prompt_file: None,
                     },
                     color: None,
                 },

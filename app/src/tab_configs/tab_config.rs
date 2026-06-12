@@ -234,6 +234,9 @@ pub fn render_tab_config(
                 is_focused: Some(true),
                 pane_mode: PaneMode::Terminal,
                 shell: None,
+                harness: None,
+                prompt: None,
+                prompt_file: None,
             }
         }
     };
@@ -400,6 +403,9 @@ fn resolve_pane_node(
                 is_focused: Some(is_focused),
                 pane_mode,
                 shell: node.shell.clone(),
+                harness: None,
+                prompt: None,
+                prompt_file: None,
             },
             explicitly_focused || did_consume,
         ))
