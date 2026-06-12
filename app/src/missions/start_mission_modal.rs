@@ -194,14 +194,12 @@ impl StartMissionModal {
             .iter()
             .enumerate()
             .map(|(i, template)| {
-                let mut item = DropdownItem::new(
+                // No tooltip: the selected template's description renders
+                // below the dropdown, and the tooltip overflows the modal.
+                DropdownItem::new(
                     template.name.clone(),
                     StartMissionModalAction::SelectTemplate(i),
-                );
-                if !template.description.is_empty() {
-                    item = item.with_tooltip(template.description.clone());
-                }
-                item
+                )
             })
             .collect();
         let has_templates = !items.is_empty();
