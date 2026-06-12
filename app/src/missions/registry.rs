@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use warpui::{Entity, ModelContext, SingletonEntity};
 
+use crate::missions::persistence;
 use crate::missions::templates::MissionStage;
 use crate::workspace::tab_group::TabGroupId;
 
@@ -35,9 +36,24 @@ pub enum MissionRegistryEvent {
 }
 
 impl MissionRegistry {
+    /// Mirrors the current missions to the on-disk state file so active
+    /// missions survive app restarts. Failures are logged, never fatal.
+    fn persist(&self) {
+        if let Err(err) = persistence::save(&self.missions) {
+            log::warn!("Failed to persist missions state: {err:?}");
+        }
+    }
+
+    /// Replaces the registry's missions with state loaded from disk. Called
+    /// once at startup, before any observers exist, so no event is emitted.
+    pub fn rehydrate(&mut self, missions: Vec<ActiveMission>) {
+        self.missions = missions;
+    }
+
     /// Registers a new mission and returns its index in the registry.
     pub fn register(&mut self, mission: ActiveMission, ctx: &mut ModelContext<Self>) -> usize {
         self.missions.push(mission);
+        self.persist();
         ctx.emit(MissionRegistryEvent::Changed);
         self.missions.len() - 1
     }
@@ -50,6 +66,7 @@ impl MissionRegistry {
     pub fn advance_stage(&mut self, index: usize, ctx: &mut ModelContext<Self>) {
         if let Some(mission) = self.missions.get_mut(index) {
             mission.current_stage += 1;
+            self.persist();
             ctx.emit(MissionRegistryEvent::Changed);
         }
     }
@@ -63,6 +80,7 @@ impl MissionRegistry {
     ) {
         if let Some(mission) = self.missions.get_mut(index) {
             mission.group_id = Some(group_id);
+            self.persist();
             ctx.emit(MissionRegistryEvent::Changed);
         }
     }
@@ -71,6 +89,7 @@ impl MissionRegistry {
     pub fn remove(&mut self, index: usize, ctx: &mut ModelContext<Self>) {
         if index < self.missions.len() {
             self.missions.remove(index);
+            self.persist();
             ctx.emit(MissionRegistryEvent::Changed);
         }
     }

@@ -3,10 +3,13 @@
 //! - [`templates`]: the YAML template schema and loader.
 //! - [`scaffold`]: the on-disk `.cockpit/` structure and prompt rendering.
 //! - [`registry`]: the in-memory singleton registry of active missions.
+//! - [`persistence`]: the on-disk mirror of the registry, so active missions
+//!   survive app restarts.
 //! - [`start_mission_modal`]: the "Start Mission" modal body view.
 //! - [`gate_dialog`]: the between-stages human gate confirmation dialog.
 
 pub mod gate_dialog;
+pub mod persistence;
 pub mod registry;
 pub mod scaffold;
 pub mod start_mission_modal;
@@ -23,7 +26,14 @@ pub use templates::{load_mission_templates, missions_dir, MissionStage, MissionT
 use warpui::AppContext;
 
 pub fn init(ctx: &mut AppContext) {
-    ctx.add_singleton_model(|_| registry::MissionRegistry::default());
+    // Rehydrate missions persisted by a previous app session. No observers
+    // exist yet, so no Changed event is needed: the footer mission chip syncs
+    // itself at construction (`sync_mission_button`), after this runs.
+    ctx.add_singleton_model(|_| {
+        let mut registry = registry::MissionRegistry::default();
+        registry.rehydrate(persistence::load());
+        registry
+    });
     start_mission_modal::init(ctx);
     gate_dialog::init(ctx);
 }
