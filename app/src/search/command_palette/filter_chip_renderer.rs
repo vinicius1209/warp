@@ -146,7 +146,7 @@ impl FilterChipRenderer for QueryFilter {
     }
 }
 
-mod styles {
+pub(super) mod styles {
     use warpui::elements::{Border, MouseState};
 
     use crate::themes::theme::{Blend, Fill, WarpTheme};

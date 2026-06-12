@@ -414,6 +414,10 @@ impl View {
             ZeroStateEvent::FilterChipSelected { filter } => {
                 self.set_active_query_filter(*filter, ctx);
             }
+            ZeroStateEvent::StartMissionSelected => {
+                self.close(ctx, None);
+                ctx.dispatch_typed_action(&WorkspaceAction::OpenStartMissionModal);
+            }
         }
     }
 

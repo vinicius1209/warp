@@ -4,7 +4,11 @@ use std::collections::HashMap;
 pub use items::Items;
 use warp_core::context_flag::ContextFlag;
 use warp_core::features::FeatureFlag;
-use warpui::elements::{Container, Flex, MouseStateHandle, ParentElement, Shrinkable, Wrap};
+use warpui::elements::{
+    ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex, Hoverable, Icon,
+    MouseStateHandle, ParentElement, Radius, Shrinkable, Text, Wrap,
+};
+use warpui::platform::Cursor;
 use warpui::{
     AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
     WindowId,
@@ -12,6 +16,7 @@ use warpui::{
 
 use crate::appearance::Appearance;
 use crate::drive::settings::WarpDriveSettings;
+use crate::search::command_palette::filter_chip_renderer::styles as chip_styles;
 use crate::search::command_palette::FilterChipRenderer;
 use crate::search::QueryFilter;
 use crate::settings::AISettings;
@@ -20,6 +25,7 @@ use crate::workspace::Workspace;
 /// A zero-state view for the command palette.
 pub struct ZeroState {
     filter_chip_to_mouse_state_handle: HashMap<QueryFilter, MouseStateHandle>,
+    missions_chip_mouse_state: MouseStateHandle,
     items: ModelHandle<Items>,
     // Store the window this view belongs to so we don't rely on the global active window
     window_id: WindowId,
@@ -28,11 +34,13 @@ pub struct ZeroState {
 #[derive(Debug)]
 pub enum Action {
     FilterChipClicked { filter: QueryFilter },
+    MissionsChipClicked,
 }
 
 #[derive(Debug)]
 pub enum Event {
     FilterChipSelected { filter: QueryFilter },
+    StartMissionSelected,
 }
 
 impl ZeroState {
@@ -44,6 +52,7 @@ impl ZeroState {
             filter_chip_to_mouse_state_handle: QueryFilter::all()
                 .map(|filter| (filter, MouseStateHandle::default()))
                 .collect(),
+            missions_chip_mouse_state: MouseStateHandle::default(),
 
             items: results_model,
             window_id: ctx.window_id(),
@@ -69,11 +78,63 @@ impl ZeroState {
                 ))
                 .with_margin_right(styles::FILTER_CHIP_MARGIN)
                 .finish()
-            }));
+            }))
+            .with_child(
+                Container::new(self.render_missions_chip(appearance))
+                    .with_margin_right(styles::FILTER_CHIP_MARGIN)
+                    .finish(),
+            );
 
         Container::new(wrap.finish())
             .with_margin_bottom(styles::FILTER_CHIPS_MARGIN_BOTTOM)
             .finish()
+    }
+
+    /// Renders the "missions" chip. Unlike the filter chips, clicking it
+    /// opens the Start Mission modal directly instead of scoping the search.
+    /// Mirrors the chip styling in
+    /// `command_palette::filter_chip_renderer::render_filter_chip`.
+    fn render_missions_chip(&self, appearance: &Appearance) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        Hoverable::new(self.missions_chip_mouse_state.clone(), |mouse_state| {
+            let font_size = appearance.monospace_font_size() - 2.;
+            let icon_size = font_size;
+            Container::new(
+                Flex::row()
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_child(
+                        Text::new_inline("missions", appearance.ui_font_family(), font_size)
+                            .with_color(theme.main_text_color(theme.surface_2()).into_solid())
+                            .finish(),
+                    )
+                    .with_child(
+                        Container::new(
+                            ConstrainedBox::new(
+                                Icon::new(
+                                    "bundled/svg/rocket.svg",
+                                    theme.main_text_color(theme.surface_2()),
+                                )
+                                .finish(),
+                            )
+                            .with_width(icon_size)
+                            .with_height(icon_size)
+                            .finish(),
+                        )
+                        .with_margin_left(8.)
+                        .finish(),
+                    )
+                    .finish(),
+            )
+            .with_vertical_padding(chip_styles::vertical_padding(mouse_state))
+            .with_horizontal_padding(chip_styles::horizontal_padding(mouse_state))
+            .with_background(chip_styles::background_fill(mouse_state, theme))
+            .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
+            .with_border(chip_styles::border(mouse_state, theme))
+            .finish()
+        })
+        .with_cursor(Cursor::PointingHand)
+        .on_click(|event_ctx, _, _| event_ctx.dispatch_typed_action(Action::MissionsChipClicked))
+        .finish()
     }
 
     /// Returns the set of valid query filters for this zero state view.
@@ -159,6 +220,7 @@ impl TypedActionView for ZeroState {
             Action::FilterChipClicked { filter } => {
                 ctx.emit(Event::FilterChipSelected { filter: *filter })
             }
+            Action::MissionsChipClicked => ctx.emit(Event::StartMissionSelected),
         }
     }
 }
