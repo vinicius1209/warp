@@ -196,6 +196,9 @@ pub enum WorkspaceAction {
     RemoveTabFromGroup(usize),
     /// Opens the "Start Mission" modal (Cockpit Missions).
     OpenStartMissionModal,
+    /// Opens the "Mission Control" modal listing every active mission, or the
+    /// "Start Mission" modal when no missions are active.
+    OpenMissionControl,
     /// Advances the active mission past its current stage, showing the
     /// stage's human gate confirmation first when one is defined.
     MissionNextStage,
@@ -942,6 +945,7 @@ impl WorkspaceAction {
             | ToggleSyntaxHighlighting
             | OpenLaunchConfigSaveModal
             | OpenStartMissionModal
+            | OpenMissionControl
             | ToggleTabRightClickMenu { .. }
             | ToggleTabSelectionRightClickMenu { .. }
             | ToggleTabGroupRightClickMenu { .. }

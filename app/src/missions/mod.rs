@@ -6,9 +6,11 @@
 //! - [`persistence`]: the on-disk mirror of the registry, so active missions
 //!   survive app restarts.
 //! - [`start_mission_modal`]: the "Start Mission" modal body view.
+//! - [`mission_control_modal`]: the "Mission Control" active-missions overview modal.
 //! - [`gate_dialog`]: the between-stages human gate confirmation dialog.
 
 pub mod gate_dialog;
+pub mod mission_control_modal;
 pub mod persistence;
 pub mod registry;
 pub mod scaffold;
@@ -17,9 +19,9 @@ pub mod templates;
 
 pub use registry::{ActiveMission, MissionRegistry, MissionRegistryEvent};
 pub use scaffold::{
-    effective_stages, onboarding_stage, profile_path, render_stage_prompt, scaffold_mission,
-    slugify, update_manifest_stage, ManifestStage, MissionManifest, ScaffoldedMission, StageStatus,
-    COCKPIT_DIR,
+    effective_stages, mark_mission_abandoned, onboarding_stage, profile_path, render_stage_prompt,
+    scaffold_mission, slugify, update_manifest_stage, ManifestStage, MissionManifest,
+    ScaffoldedMission, StageStatus, COCKPIT_DIR,
 };
 pub use templates::{load_mission_templates, missions_dir, MissionStage, MissionTemplate};
 
@@ -35,5 +37,6 @@ pub fn init(ctx: &mut AppContext) {
         registry
     });
     start_mission_modal::init(ctx);
+    mission_control_modal::init(ctx);
     gate_dialog::init(ctx);
 }

@@ -1030,6 +1030,12 @@ pub fn init(app: &mut AppContext) {
         )
         .with_context_predicate(id!("Workspace")),
         EditableBinding::new(
+            "workspace:mission_control",
+            "Mission Control",
+            WorkspaceAction::OpenMissionControl,
+        )
+        .with_context_predicate(id!("Workspace")),
+        EditableBinding::new(
             "workspace:mission_next_stage",
             "Mission: Next Stage",
             WorkspaceAction::MissionNextStage,

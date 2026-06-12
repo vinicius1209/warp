@@ -62,6 +62,10 @@ pub struct MissionManifest {
     pub created_at: String,
     pub current_stage: usize,
     pub stages: Vec<ManifestStage>,
+    /// RFC 3339 timestamp set when the user abandons the mission from
+    /// Mission Control. `None` for live (or completed) missions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abandoned_at: Option<String>,
 }
 
 /// A freshly scaffolded mission directory.
@@ -118,6 +122,7 @@ pub fn scaffold_mission(
                 status: StageStatus::Pending,
             })
             .collect(),
+        abandoned_at: None,
     };
     write_manifest(&mission_dir, &manifest)?;
 
@@ -149,6 +154,17 @@ pub fn update_manifest_stage(
     if matches!(status, StageStatus::Running) {
         manifest.current_stage = stage_index;
     }
+    write_manifest(mission_dir, &manifest)
+}
+
+/// Marks the mission as abandoned by stamping `abandoned_at` in its
+/// `manifest.json`, leaving stage statuses as-is.
+pub fn mark_mission_abandoned(mission_dir: &Path) -> anyhow::Result<()> {
+    let manifest_path = mission_dir.join(MANIFEST_FILE_NAME);
+    let contents = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("failed to read mission manifest {manifest_path:?}"))?;
+    let mut manifest = serde_json::from_str::<MissionManifest>(&contents)?;
+    manifest.abandoned_at = Some(chrono::Local::now().to_rfc3339());
     write_manifest(mission_dir, &manifest)
 }
 

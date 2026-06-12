@@ -91,7 +91,8 @@ impl ZeroState {
     }
 
     /// Renders the "missions" chip. Unlike the filter chips, clicking it
-    /// opens the Start Mission modal directly instead of scoping the search.
+    /// opens Mission Control (or the Start Mission modal when no missions
+    /// are active) instead of scoping the search.
     /// Mirrors the chip styling in
     /// `command_palette::filter_chip_renderer::render_filter_chip`.
     fn render_missions_chip(&self, appearance: &Appearance) -> Box<dyn Element> {

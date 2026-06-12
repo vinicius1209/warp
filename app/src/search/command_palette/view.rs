@@ -25,6 +25,7 @@ use super::CommandPaletteMixer;
 use crate::appearance::Appearance;
 use crate::drive::CloudObjectTypeAndId;
 use crate::features::FeatureFlag;
+use crate::missions::MissionRegistry;
 use crate::palette::PaletteMode;
 use crate::root_view::OpenLaunchConfigArg;
 use crate::search::action::search_item::MatchedBinding;
@@ -416,7 +417,13 @@ impl View {
             }
             ZeroStateEvent::StartMissionSelected => {
                 self.close(ctx, None);
-                ctx.dispatch_typed_action(&WorkspaceAction::OpenStartMissionModal);
+                // With active missions, the chip opens Mission Control;
+                // otherwise it goes straight to the Start Mission modal.
+                if MissionRegistry::as_ref(ctx).missions().is_empty() {
+                    ctx.dispatch_typed_action(&WorkspaceAction::OpenStartMissionModal);
+                } else {
+                    ctx.dispatch_typed_action(&WorkspaceAction::OpenMissionControl);
+                }
             }
         }
     }
