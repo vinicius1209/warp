@@ -14,12 +14,14 @@
 pub mod gate_dialog;
 pub mod mission_control_modal;
 pub mod persistence;
+pub mod preflight;
 pub mod reconcile;
 pub mod registry;
 pub mod scaffold;
 pub mod start_mission_modal;
 pub mod templates;
 
+pub use preflight::{check_harness, pick_default_harness, required_harnesses, HarnessAvailability};
 pub use reconcile::reconcile_mission_groups;
 pub use registry::{ActiveMission, MissionRegistry, MissionRegistryEvent};
 pub use scaffold::{

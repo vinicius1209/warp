@@ -7060,6 +7060,38 @@ impl Workspace {
             });
             return;
         }
+
+        // Auto-select the mission's default harness: the first installed
+        // harness in our preference order, falling back to "claude" so the
+        // pre-flight gate below fires with a useful install hint instead of
+        // launching into a broken CLI.
+        let default_harness = missions::pick_default_harness();
+
+        // Pre-flight: every harness this mission will actually run must be
+        // installed before we scaffold anything on disk. Validating here (before
+        // `scaffold_mission`) means a missing agent aborts cleanly with no
+        // leftover scaffold directory.
+        let required = missions::required_harnesses(&stages, &default_harness);
+        for harness in &required {
+            if let missions::HarnessAvailability::NotInstalled { install_hint, .. } =
+                missions::check_harness(harness)
+            {
+                let agent_name = Harness::from_config_name(harness)
+                    .map(|h| h.display_name())
+                    .unwrap_or(harness.as_str());
+                log::warn!("Mission pre-flight blocked: harness '{harness}' is not installed");
+                self.toast_stack.update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::error(format!(
+                            "{agent_name} isn't installed, so this mission can't start.\n{install_hint}"
+                        )),
+                        ctx,
+                    );
+                });
+                return;
+            }
+        }
+
         let scaffolded = match missions::scaffold_mission(&project_dir, &template, &briefing) {
             Ok(scaffolded) => scaffolded,
             Err(err) => {
@@ -7081,7 +7113,7 @@ impl Workspace {
             mission_dir: scaffolded.mission_dir.clone(),
             stages,
             current_stage: 0,
-            default_harness: "claude".to_string(),
+            default_harness,
             group_id: None,
         };
         let slug = scaffolded.slug.clone();
