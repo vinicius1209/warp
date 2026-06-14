@@ -1036,9 +1036,11 @@ pub struct Workspace {
     start_mission_modal: ModalViewState<Modal<StartMissionModal>>,
     mission_control_modal: ModalViewState<Modal<MissionControlModal>>,
     mission_gate_dialog: ViewHandle<MissionGateDialog>,
-    /// Registry index of the mission awaiting gate confirmation, set while
-    /// the mission gate dialog is open.
-    mission_gate_pending_index: Option<usize>,
+    /// Stable slug of the mission awaiting gate confirmation, set while the
+    /// mission gate dialog is open. Keyed on the durable slug (not a registry
+    /// index, which shifts on removal) and resolved to a live index only at
+    /// confirm time.
+    mission_gate_pending_slug: Option<String>,
     close_session_confirmation_dialog: ViewHandle<CloseSessionConfirmationDialog>,
     rewind_confirmation_dialog: ViewHandle<RewindConfirmationDialog>,
     delete_conversation_confirmation_dialog: ViewHandle<DeleteConversationConfirmationDialog>,
@@ -3358,7 +3360,7 @@ impl Workspace {
             start_mission_modal,
             mission_control_modal,
             mission_gate_dialog,
-            mission_gate_pending_index: None,
+            mission_gate_pending_slug: None,
             close_session_confirmation_dialog,
             rewind_confirmation_dialog,
             delete_conversation_confirmation_dialog,
@@ -3862,10 +3864,18 @@ impl Workspace {
                                     draggable_state: Default::default(),
                                     // TODO(johnturcoo) persist tab/group pinned state.
                                     pinned: false,
+                                    mission_slug: group_snapshot.mission_slug.clone(),
                                 },
                             )
                         })
                         .collect();
+
+                    // The mission registry was rehydrated at app init with the
+                    // `group_id`s from a previous session, but `read_app_state`
+                    // just minted fresh `TabGroupId`s for these restored groups.
+                    // Rebind each active mission to its live group by stable
+                    // slug now that both restores have completed.
+                    self.reconcile_restored_mission_groups(ctx);
                 }
 
                 window_snapshot
@@ -6883,19 +6893,31 @@ impl Workspace {
     ) {
         match event {
             MissionControlModalEvent::Resume { mission_index } => {
-                let mission_index = *mission_index;
+                let Some(slug) = self.mission_slug_at_index(*mission_index, ctx) else {
+                    self.close_mission_control_modal(ctx);
+                    self.toast_mission_gone(ctx);
+                    return;
+                };
                 self.close_mission_control_modal(ctx);
-                self.resume_mission_stage(mission_index, ctx);
+                self.resume_mission_stage(&slug, ctx);
             }
             MissionControlModalEvent::NextStage { mission_index } => {
-                let mission_index = *mission_index;
+                let Some(slug) = self.mission_slug_at_index(*mission_index, ctx) else {
+                    self.close_mission_control_modal(ctx);
+                    self.toast_mission_gone(ctx);
+                    return;
+                };
                 self.close_mission_control_modal(ctx);
-                self.mission_next_stage_for(Some(mission_index), ctx);
+                self.mission_next_stage_for(Some(slug), ctx);
             }
             MissionControlModalEvent::Abandon { mission_index } => {
-                let mission_index = *mission_index;
+                let Some(slug) = self.mission_slug_at_index(*mission_index, ctx) else {
+                    self.close_mission_control_modal(ctx);
+                    self.toast_mission_gone(ctx);
+                    return;
+                };
                 self.close_mission_control_modal(ctx);
-                self.abandon_mission(mission_index, ctx);
+                self.abandon_mission(&slug, ctx);
             }
             MissionControlModalEvent::NewMission => {
                 self.close_mission_control_modal(ctx);
@@ -6903,6 +6925,115 @@ impl Workspace {
             }
             MissionControlModalEvent::Closed => self.close_mission_control_modal(ctx),
         }
+    }
+
+    /// Resolves a mission's stable `slug` to its current registry index, or
+    /// `None` if no live mission has that slug. This is the single chokepoint
+    /// for turning a durable slug into a live index at call time, so a stale
+    /// index is never acted on (the registry shifts on removal, and
+    /// `TabGroupId`s are minted fresh on restore).
+    fn mission_index_by_slug(&self, slug: &str, app: &AppContext) -> Option<usize> {
+        MissionRegistry::as_ref(app).find_by_slug(slug)
+    }
+
+    /// Reads the stable slug of the mission currently at `mission_index`, used
+    /// to snapshot the durable identity from a UI-supplied index (e.g. a
+    /// Mission Control row) before acting on it. `None` when the index is stale.
+    fn mission_slug_at_index(&self, mission_index: usize, app: &AppContext) -> Option<String> {
+        MissionRegistry::as_ref(app)
+            .get(mission_index)
+            .map(|mission| mission.slug.clone())
+    }
+
+    /// Shows the standard "mission no longer exists" toast, used wherever a
+    /// slug or index fails to resolve to a live mission.
+    fn toast_mission_gone(&mut self, ctx: &mut ViewContext<Self>) {
+        self.toast_stack.update(ctx, |toast_stack, ctx| {
+            toast_stack.add_ephemeral_toast(
+                DismissibleToast::default("That mission is no longer active.".to_string()),
+                ctx,
+            );
+        });
+    }
+
+    /// Reads a mission's `brief.md`. On an IO error this logs a warning, shows
+    /// an error toast, and returns `None` so the caller aborts: it is
+    /// unacceptable to launch an agent (or show a gate) against a silently
+    /// empty briefing.
+    fn read_mission_briefing(
+        &mut self,
+        mission_dir: &Path,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<String> {
+        let brief_path = mission_dir.join("brief.md");
+        let briefing = match std::fs::read_to_string(&brief_path) {
+            Ok(briefing) => briefing,
+            Err(err) => {
+                log::warn!("Failed to read mission briefing {brief_path:?}: {err:?}");
+                self.toast_mission_briefing_unreadable(&brief_path, ctx);
+                return None;
+            }
+        };
+        // An empty briefing means a scaffold bug or manual tampering; never run
+        // an agent against an empty {{briefing}}.
+        if briefing.trim().is_empty() {
+            log::warn!("Mission briefing {brief_path:?} is empty");
+            self.toast_mission_briefing_unreadable(&brief_path, ctx);
+            return None;
+        }
+        Some(briefing)
+    }
+
+    fn toast_mission_briefing_unreadable(
+        &mut self,
+        brief_path: &Path,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let brief_display = brief_path.display();
+        self.toast_stack.update(ctx, |toast_stack, ctx| {
+            toast_stack.add_ephemeral_toast(
+                DismissibleToast::error(format!(
+                    "Couldn't read the mission briefing ({brief_display}). Aborting."
+                )),
+                ctx,
+            );
+        });
+    }
+
+    /// Rebinds each active mission's `group_id` to its live tab group after a
+    /// session restore. The registry was rehydrated with stale `group_id`s
+    /// (the previous session's), and `read_app_state` minted fresh
+    /// `TabGroupId`s for the restored groups; the stable `mission_slug` stamped
+    /// on each group is the bridge. The matching is a pure function so it can
+    /// be unit tested without a live workspace.
+    fn reconcile_restored_mission_groups(&mut self, ctx: &mut ViewContext<Self>) {
+        let mission_slugs: Vec<String> = MissionRegistry::as_ref(ctx)
+            .missions()
+            .iter()
+            .map(|mission| mission.slug.clone())
+            .collect();
+        if mission_slugs.is_empty() {
+            return;
+        }
+        let groups: Vec<(TabGroupId, Option<String>)> = self
+            .tab_groups
+            .values()
+            .map(|group| (group.id, group.mission_slug.clone()))
+            .collect();
+        let rebindings = missions::reconcile_mission_groups(
+            mission_slugs.iter().map(String::as_str),
+            groups.iter().map(|(id, slug)| (*id, slug.as_deref())),
+        );
+        if rebindings.is_empty() {
+            return;
+        }
+        MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
+            for (slug, group_id) in &rebindings {
+                if let Some(mission_index) = registry.find_by_slug(slug) {
+                    registry.set_group_id(mission_index, *group_id, ctx);
+                }
+            }
+        });
     }
 
     /// Starts a new Cockpit Mission: scaffolds the on-disk `.cockpit/`
@@ -6953,10 +7084,11 @@ impl Workspace {
             default_harness: "claude".to_string(),
             group_id: None,
         };
+        let slug = scaffolded.slug.clone();
         let mission_index = MissionRegistry::handle(ctx)
             .update(ctx, |registry, ctx| registry.register(mission, ctx));
 
-        let Some(tab_index) = self.open_mission_stage_tab(mission_index, 0, ctx) else {
+        let Some(tab_index) = self.open_mission_stage_tab(&slug, 0, ctx) else {
             return;
         };
 
@@ -6969,6 +7101,9 @@ impl Workspace {
             let previous_group_id = self.tabs.get(tab_index).and_then(|tab| tab.group_id);
             let group = TabGroup {
                 name: Some(format!("Mission: {}", template.name)),
+                // Persist the stable mission slug on the group so the mission
+                // can re-find this group after a restore mints a fresh id.
+                mission_slug: Some(scaffolded.slug.clone()),
                 ..TabGroup::new()
             };
             let group_id = group.id;
@@ -7010,27 +7145,50 @@ impl Workspace {
         });
     }
 
-    /// Handles the `MissionNextStage` action: advances the mission hosting
-    /// the active tab's group (so the action targets the mission the user is
-    /// looking at), falling back to the most recently started mission when
-    /// the active tab isn't part of a mission group.
+    /// Handles the `MissionNextStage` action: advances the mission hosting the
+    /// active tab's group (so the action targets the mission the user is
+    /// looking at). When the active tab isn't part of a mission group this
+    /// no-ops with a toast rather than guessing a mission — acting on the wrong
+    /// mission is worse than doing nothing.
     fn mission_next_stage(&mut self, ctx: &mut ViewContext<Self>) {
-        let mission_index = {
-            let registry = MissionRegistry::as_ref(ctx);
-            self.tabs
-                .get(self.active_tab_index)
-                .and_then(|tab| tab.group_id)
-                .and_then(|group_id| registry.find_by_group(group_id))
-                .or_else(|| registry.find_latest())
+        let slug = self
+            .tabs
+            .get(self.active_tab_index)
+            .and_then(|tab| tab.group_id)
+            .and_then(|group_id| {
+                let registry = MissionRegistry::as_ref(ctx);
+                registry
+                    .find_by_group(group_id)
+                    .and_then(|index| registry.get(index))
+                    .map(|mission| mission.slug.clone())
+            });
+        let Some(slug) = slug else {
+            self.toast_stack.update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::default("Switch to a mission tab to advance it.".to_string()),
+                    ctx,
+                );
+            });
+            return;
         };
-        self.mission_next_stage_for(mission_index, ctx);
+        self.mission_next_stage_for(Some(slug), ctx);
     }
 
     /// Handles the `MissionNextStageForGroup` action: advances the mission
     /// whose stage tabs live in the given tab group.
     fn mission_next_stage_for_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
-        let mission_index = MissionRegistry::as_ref(ctx).find_by_group(group_id);
-        self.mission_next_stage_for(mission_index, ctx);
+        let slug = {
+            let registry = MissionRegistry::as_ref(ctx);
+            registry
+                .find_by_group(group_id)
+                .and_then(|index| registry.get(index))
+                .map(|mission| mission.slug.clone())
+        };
+        let Some(slug) = slug else {
+            self.toast_mission_gone(ctx);
+            return;
+        };
+        self.mission_next_stage_for(Some(slug), ctx);
     }
 
     /// Returns the tab group of the tab whose pane group contains the given
@@ -7051,20 +7209,19 @@ impl Workspace {
             .and_then(|tab| tab.group_id)
     }
 
-    /// Completes the mission at `mission_index` when its current stage is the
-    /// last one, otherwise shows the gate confirmation dialog for advancing
-    /// to the next stage.
-    fn mission_next_stage_for(
-        &mut self,
-        mission_index: Option<usize>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let mission_data = {
+    /// Completes the mission with the given stable `slug` when its current
+    /// stage is the last one, otherwise shows the gate confirmation dialog for
+    /// advancing to the next stage. The slug is resolved to a live registry
+    /// index here, at call time; a missing mission no-ops with a toast.
+    fn mission_next_stage_for(&mut self, slug: Option<String>, ctx: &mut ViewContext<Self>) {
+        let mission_data = slug.as_deref().and_then(|slug| {
             let registry = MissionRegistry::as_ref(ctx);
-            mission_index.and_then(|mission_index| {
-                registry.get(mission_index).map(|mission| {
+            registry
+                .find_by_slug(slug)
+                .and_then(|mission_index| registry.get(mission_index))
+                .map(|mission| {
                     (
-                        mission_index,
+                        mission.slug.clone(),
                         mission.current_stage,
                         mission.stages.len(),
                         mission.mission_dir.clone(),
@@ -7076,41 +7233,32 @@ impl Workspace {
                             .map(|stage| stage.name.clone()),
                     )
                 })
-            })
-        };
-        let Some((
-            mission_index,
-            current_stage,
-            stage_count,
-            mission_dir,
-            project_dir,
-            current,
-            next_name,
-        )) = mission_data
+        });
+        let Some((slug, current_stage, stage_count, mission_dir, project_dir, current, next_name)) =
+            mission_data
         else {
-            self.toast_stack.update(ctx, |toast_stack, ctx| {
-                toast_stack.add_ephemeral_toast(
-                    DismissibleToast::default("Nenhuma missão ativa".to_string()),
-                    ctx,
-                );
-            });
+            self.toast_mission_gone(ctx);
             return;
         };
         let Some(current) = current else {
-            log::error!("Mission {mission_index} has no stage at index {current_stage}");
+            log::error!("Mission {slug} has no stage at index {current_stage}");
             return;
         };
 
-        // Last stage: mark it done and complete the mission.
+        // Last stage: mark it done and complete the mission. Resolve the slug
+        // to a live index again at the moment of removal so a registry shift
+        // between resolution and here can't drop the wrong mission.
         if current_stage + 1 >= stage_count {
             if let Err(err) =
                 missions::update_manifest_stage(&mission_dir, current_stage, StageStatus::Done)
             {
                 log::warn!("Failed to update mission manifest in {mission_dir:?}: {err:?}");
             }
-            MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
-                registry.remove(mission_index, ctx);
-            });
+            if let Some(mission_index) = self.mission_index_by_slug(&slug, ctx) {
+                MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
+                    registry.remove(mission_index, ctx);
+                });
+            }
             self.toast_stack.update(ctx, |toast_stack, ctx| {
                 toast_stack.add_ephemeral_toast(
                     DismissibleToast::success("Missão concluída 🎉".to_string()),
@@ -7121,8 +7269,11 @@ impl Workspace {
         }
 
         // Show the human gate before advancing. Gate text supports the same
-        // placeholders as stage prompts (e.g. `{{mission_dir}}`).
-        let briefing = std::fs::read_to_string(mission_dir.join("brief.md")).unwrap_or_default();
+        // placeholders as stage prompts (e.g. `{{mission_dir}}`). A briefing
+        // read error aborts: don't show a gate with a silently empty briefing.
+        let Some(briefing) = self.read_mission_briefing(&mission_dir, ctx) else {
+            return;
+        };
         let message = match &current.gate {
             Some(gate) => {
                 missions::render_stage_prompt(gate, &briefing, &mission_dir, &project_dir)
@@ -7138,7 +7289,7 @@ impl Workspace {
         self.mission_gate_dialog.update(ctx, |dialog, _| {
             dialog.set_message(message);
         });
-        self.mission_gate_pending_index = Some(mission_index);
+        self.mission_gate_pending_slug = Some(slug);
         self.current_workspace_state.is_mission_gate_dialog_open = true;
         ctx.focus(&self.mission_gate_dialog);
         ctx.notify();
@@ -7153,33 +7304,44 @@ impl Workspace {
         ctx.notify();
         match event {
             MissionGateDialogEvent::Confirm => {
-                if let Some(mission_index) = self.mission_gate_pending_index.take() {
-                    self.advance_mission_stage(mission_index, ctx);
+                // Resolve the durable slug to a live mission at confirm time:
+                // the mission may have been abandoned while the gate was open.
+                if let Some(slug) = self.mission_gate_pending_slug.take() {
+                    if self.mission_index_by_slug(&slug, ctx).is_some() {
+                        self.advance_mission_stage(&slug, ctx);
+                    } else {
+                        self.toast_mission_gone(ctx);
+                        self.focus_active_tab(ctx);
+                    }
                 }
             }
             MissionGateDialogEvent::Cancel => {
-                self.mission_gate_pending_index = None;
+                self.mission_gate_pending_slug = None;
                 self.focus_active_tab(ctx);
             }
         }
     }
 
-    /// Advances the mission past its current stage: updates the manifest,
-    /// bumps the registry, and opens the next stage's tab in the mission's
-    /// tab group.
-    fn advance_mission_stage(&mut self, mission_index: usize, ctx: &mut ViewContext<Self>) {
+    /// Advances the mission with the given stable `slug` past its current
+    /// stage: updates the manifest, bumps the registry, and opens the next
+    /// stage's tab in the mission's tab group. The slug is resolved to a live
+    /// index here and again right before the registry mutation.
+    fn advance_mission_stage(&mut self, slug: &str, ctx: &mut ViewContext<Self>) {
         let mission_data = {
             let registry = MissionRegistry::as_ref(ctx);
-            registry.get(mission_index).map(|mission| {
-                (
-                    mission.current_stage,
-                    mission.mission_dir.clone(),
-                    mission.group_id,
-                )
-            })
+            registry
+                .find_by_slug(slug)
+                .and_then(|mission_index| registry.get(mission_index))
+                .map(|mission| {
+                    (
+                        mission.current_stage,
+                        mission.mission_dir.clone(),
+                        mission.group_id,
+                    )
+                })
         };
         let Some((current_stage, mission_dir, group_id)) = mission_data else {
-            log::error!("advance_mission_stage: no mission at index {mission_index}");
+            self.toast_mission_gone(ctx);
             return;
         };
         let next_stage = current_stage + 1;
@@ -7194,7 +7356,7 @@ impl Workspace {
         {
             log::warn!("Failed to update mission manifest in {mission_dir:?}: {err:?}");
         }
-        let Some(tab_index) = self.open_mission_stage_tab(mission_index, next_stage, ctx) else {
+        let Some(tab_index) = self.open_mission_stage_tab(slug, next_stage, ctx) else {
             return;
         };
         if FeatureFlag::GroupedTabs.is_enabled() {
@@ -7204,46 +7366,54 @@ impl Workspace {
         }
         // Advance the registry after the new stage tab has joined the
         // mission's group, so observers (e.g. footer mission chips) see the
-        // final tab/group state when the change event fires.
-        MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
-            registry.advance_stage(mission_index, ctx);
-        });
+        // final tab/group state when the change event fires. Re-resolve the
+        // slug: opening the tab can't shift the registry, but resolving here
+        // keeps the index live rather than carrying a stale one.
+        if let Some(mission_index) = self.mission_index_by_slug(slug, ctx) {
+            MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
+                registry.advance_stage(mission_index, ctx);
+            });
+        }
         self.focus_active_tab(ctx);
     }
 
     /// Opens a new tab running the given mission stage's harness, seeded with
-    /// the stage's rendered prompt. Returns the new tab's index, or `None`
-    /// when the mission/stage can't be resolved (no tab is opened).
+    /// the stage's rendered prompt. Resolves the stable `slug` to a live
+    /// mission at call time. Returns the new tab's index, or `None` when the
+    /// mission/stage can't be resolved or the briefing can't be read (no tab
+    /// is opened).
     fn open_mission_stage_tab(
         &mut self,
-        mission_index: usize,
+        slug: &str,
         stage_index: usize,
         ctx: &mut ViewContext<Self>,
     ) -> Option<usize> {
         let mission_data = {
             let registry = MissionRegistry::as_ref(ctx);
-            registry.get(mission_index).and_then(|mission| {
-                mission.stages.get(stage_index).map(|stage| {
-                    (
-                        mission.slug.clone(),
-                        mission.project_dir.clone(),
-                        mission.mission_dir.clone(),
-                        mission.default_harness.clone(),
-                        stage.clone(),
-                    )
+            registry
+                .find_by_slug(slug)
+                .and_then(|mission_index| registry.get(mission_index))
+                .and_then(|mission| {
+                    mission.stages.get(stage_index).map(|stage| {
+                        (
+                            mission.slug.clone(),
+                            mission.project_dir.clone(),
+                            mission.mission_dir.clone(),
+                            mission.default_harness.clone(),
+                            stage.clone(),
+                        )
+                    })
                 })
-            })
         };
         let Some((slug, project_dir, mission_dir, default_harness, stage)) = mission_data else {
-            log::error!(
-                "open_mission_stage_tab: mission {mission_index} has no stage {stage_index}"
-            );
+            log::error!("open_mission_stage_tab: mission {slug} has no stage {stage_index}");
             return None;
         };
 
         // `render_stage_prompt` needs the briefing; read it back from the
-        // mission's brief.md (it was written at scaffold time).
-        let briefing = std::fs::read_to_string(mission_dir.join("brief.md")).unwrap_or_default();
+        // mission's brief.md (it was written at scaffold time). A read error
+        // aborts: never launch the agent against a silently empty briefing.
+        let briefing = self.read_mission_briefing(&mission_dir, ctx)?;
         let prompt =
             missions::render_stage_prompt(&stage.prompt, &briefing, &mission_dir, &project_dir);
 
@@ -7266,26 +7436,29 @@ impl Workspace {
         Some(self.active_tab_index)
     }
 
-    /// Abandons the mission at `mission_index`: stamps `abandoned_at` in its
-    /// manifest (stage statuses are left as-is) and removes it from the
-    /// registry.
-    fn abandon_mission(&mut self, mission_index: usize, ctx: &mut ViewContext<Self>) {
+    /// Abandons the mission with the given stable `slug`: stamps `abandoned_at`
+    /// in its manifest (stage statuses are left as-is) and removes it from the
+    /// registry. Resolves the slug to a live index at call time.
+    fn abandon_mission(&mut self, slug: &str, ctx: &mut ViewContext<Self>) {
         let mission_data = {
             let registry = MissionRegistry::as_ref(ctx);
             registry
-                .get(mission_index)
+                .find_by_slug(slug)
+                .and_then(|mission_index| registry.get(mission_index))
                 .map(|mission| (mission.slug.clone(), mission.mission_dir.clone()))
         };
         let Some((slug, mission_dir)) = mission_data else {
-            log::error!("abandon_mission: no mission at index {mission_index}");
+            self.toast_mission_gone(ctx);
             return;
         };
         if let Err(err) = missions::mark_mission_abandoned(&mission_dir) {
             log::warn!("Failed to mark mission abandoned in {mission_dir:?}: {err:?}");
         }
-        MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
-            registry.remove(mission_index, ctx);
-        });
+        if let Some(mission_index) = self.mission_index_by_slug(&slug, ctx) {
+            MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
+                registry.remove(mission_index, ctx);
+            });
+        }
         self.toast_stack.update(ctx, |toast_stack, ctx| {
             toast_stack.add_ephemeral_toast(
                 DismissibleToast::default(format!("Missão abandonada: {slug}")),
@@ -7294,32 +7467,34 @@ impl Workspace {
         });
     }
 
-    /// Resumes the current stage of the mission at `mission_index` in a new
-    /// tab. For the "claude" harness this resumes the most recent
+    /// Resumes the current stage of the mission with the given stable `slug` in
+    /// a new tab. For the "claude" harness this resumes the most recent
     /// conversation in the project directory via `claude --continue`; other
     /// harnesses have no generic continue flag, so the stage is re-run fresh.
-    fn resume_mission_stage(&mut self, mission_index: usize, ctx: &mut ViewContext<Self>) {
+    /// Resolves the slug to a live index at call time.
+    fn resume_mission_stage(&mut self, slug: &str, ctx: &mut ViewContext<Self>) {
         let mission_data = {
             let registry = MissionRegistry::as_ref(ctx);
-            registry.get(mission_index).map(|mission| {
-                let stage = mission.stages.get(mission.current_stage);
-                (
-                    mission.slug.clone(),
-                    mission.template_name.clone(),
-                    mission.project_dir.clone(),
-                    mission.current_stage,
-                    stage
-                        .and_then(|stage| stage.harness.clone())
-                        .unwrap_or_else(|| mission.default_harness.clone()),
-                    stage.map(|stage| stage.name.clone()).unwrap_or_default(),
-                    mission.group_id,
-                )
-            })
+            registry
+                .find_by_slug(slug)
+                .and_then(|mission_index| registry.get(mission_index))
+                .map(|mission| {
+                    let stage = mission.stages.get(mission.current_stage);
+                    (
+                        mission.slug.clone(),
+                        mission.project_dir.clone(),
+                        mission.current_stage,
+                        stage
+                            .and_then(|stage| stage.harness.clone())
+                            .unwrap_or_else(|| mission.default_harness.clone()),
+                        stage.map(|stage| stage.name.clone()).unwrap_or_default(),
+                        mission.group_id,
+                    )
+                })
         };
-        let Some((slug, template_name, project_dir, current_stage, harness, stage_name, group_id)) =
-            mission_data
+        let Some((slug, project_dir, current_stage, harness, stage_name, group_id)) = mission_data
         else {
-            log::error!("resume_mission_stage: no mission at index {mission_index}");
+            self.toast_mission_gone(ctx);
             return;
         };
 
@@ -7347,20 +7522,14 @@ impl Workspace {
             );
             Some(self.active_tab_index)
         } else {
-            self.open_mission_stage_tab(mission_index, current_stage, ctx)
+            self.open_mission_stage_tab(&slug, current_stage, ctx)
         };
         let Some(tab_index) = tab_index else {
             return;
         };
 
         if FeatureFlag::GroupedTabs.is_enabled() {
-            self.regroup_resumed_mission_tab(
-                mission_index,
-                &template_name,
-                group_id,
-                tab_index,
-                ctx,
-            );
+            self.regroup_resumed_mission_tab(&slug, group_id, tab_index, ctx);
         }
 
         self.toast_stack.update(ctx, |toast_stack, ctx| {
@@ -7372,14 +7541,15 @@ impl Workspace {
     }
 
     /// Moves the resumed stage tab into the mission's tab group. When the
-    /// persisted `group_id` no longer matches a live group (session restore
-    /// mints fresh `TabGroupId`s), lazily rebinds the mission to the unique
-    /// live group named "Mission: {template}", or to a freshly created one
-    /// when there are zero or multiple candidates.
+    /// mission's `group_id` no longer matches a live group (session restore
+    /// mints fresh `TabGroupId`s), rebinds it to the live group carrying the
+    /// same stable `mission_slug` — the durable key that survives restore.
+    /// Only if no group claims the slug does it fall back to the legacy
+    /// name-match heuristic, and otherwise creates a fresh group stamped with
+    /// the slug. `slug` resolves to a live registry index at call time.
     fn regroup_resumed_mission_tab(
         &mut self,
-        mission_index: usize,
-        template_name: &str,
+        slug: &str,
         group_id: Option<TabGroupId>,
         tab_index: usize,
         ctx: &mut ViewContext<Self>,
@@ -7389,32 +7559,65 @@ impl Workspace {
             return;
         }
 
-        let group_name = format!("Mission: {template_name}");
-        let matches: Vec<TabGroupId> = self
+        // Primary: the live group stamped with this mission's stable slug.
+        let by_slug = self
             .tab_groups
             .iter()
-            .filter(|(_, group)| group.name.as_deref() == Some(group_name.as_str()))
-            .map(|(id, _)| *id)
-            .collect();
-        let group_id = match matches.as_slice() {
-            [only] => *only,
-            // Zero or ambiguous name matches: bind to a fresh named group.
-            _ => {
-                let group = TabGroup {
-                    name: Some(group_name),
-                    ..TabGroup::new()
-                };
-                let group_id = group.id;
-                self.tab_groups.insert(group_id, group);
-                group_id
+            .find(|(_, group)| group.mission_slug.as_deref() == Some(slug))
+            .map(|(id, _)| *id);
+
+        let group_id = if let Some(group_id) = by_slug {
+            group_id
+        } else {
+            // Fallback: a single group named after the mission template (legacy
+            // snapshots predating `mission_slug`). Stamp it with the slug so
+            // future restores resolve by slug directly.
+            let template_name = MissionRegistry::as_ref(ctx)
+                .find_by_slug(slug)
+                .and_then(|index| MissionRegistry::as_ref(ctx).get(index))
+                .map(|mission| mission.template_name.clone());
+            let by_name = template_name.as_deref().and_then(|template_name| {
+                let group_name = format!("Mission: {template_name}");
+                let matches: Vec<TabGroupId> = self
+                    .tab_groups
+                    .iter()
+                    .filter(|(_, group)| group.name.as_deref() == Some(group_name.as_str()))
+                    .map(|(id, _)| *id)
+                    .collect();
+                match matches.as_slice() {
+                    [only] => Some(*only),
+                    _ => None,
+                }
+            });
+            match by_name {
+                Some(group_id) => {
+                    if let Some(group) = self.tab_groups.get_mut(&group_id) {
+                        group.mission_slug = Some(slug.to_string());
+                    }
+                    group_id
+                }
+                // No live group for this mission: bind to a fresh named group
+                // stamped with the slug.
+                None => {
+                    let group = TabGroup {
+                        name: template_name.map(|name| format!("Mission: {name}")),
+                        mission_slug: Some(slug.to_string()),
+                        ..TabGroup::new()
+                    };
+                    let group_id = group.id;
+                    self.tab_groups.insert(group_id, group);
+                    group_id
+                }
             }
         };
         // `move_tab_to_group` persists the workspace (`workspace:save_app`)
         // and the registry persists itself on `set_group_id`.
         self.move_tab_to_group(tab_index, group_id, ctx);
-        MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
-            registry.set_group_id(mission_index, group_id, ctx);
-        });
+        if let Some(mission_index) = self.mission_index_by_slug(slug, ctx) {
+            MissionRegistry::handle(ctx).update(ctx, |registry, ctx| {
+                registry.set_group_id(mission_index, group_id, ctx);
+            });
+        }
     }
 
     /// Opens a tab config, showing the param-fill modal when the config has parameters,
@@ -11832,6 +12035,7 @@ impl Workspace {
                     name: group.name.clone(),
                     color: group.color,
                     collapsed: group.collapsed,
+                    mission_slug: group.mission_slug.clone(),
                 })
                 .collect()
         } else {

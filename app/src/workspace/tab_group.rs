@@ -32,6 +32,10 @@ pub struct TabGroup {
     pub draggable_state: DraggableState,
     /// True when this whole group is pinned to the front of the tab list.
     pub pinned: bool,
+    /// Stable slug of the Cockpit mission hosted in this group, if any. The
+    /// `id` is regenerated on every session restore, so this durable slug is
+    /// what lets a restored mission re-find its live group.
+    pub mission_slug: Option<String>,
 }
 
 impl TabGroup {
@@ -44,6 +48,7 @@ impl TabGroup {
             collapsed: false,
             draggable_state: Default::default(),
             pinned: false,
+            mission_slug: None,
         }
     }
 }

@@ -35,7 +35,10 @@ struct PersistedMission {
     /// Inner uuid of the tab group hosting the mission's stage tabs. Note:
     /// session restore mints fresh `TabGroupId`s (see `read_app_state` in
     /// `persistence/sqlite.rs`), so after a restart this id won't match any
-    /// live group; it's kept for round-trip fidelity.
+    /// live group. It's rebound to the live group at startup by matching the
+    /// mission's stable `slug` against each restored group's `mission_slug`
+    /// (see `reconcile_restored_mission_groups` in `workspace/view.rs`); this
+    /// stale value is kept only for round-trip fidelity.
     group_id: Option<Uuid>,
 }
 

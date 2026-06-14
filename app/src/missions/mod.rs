@@ -5,6 +5,8 @@
 //! - [`registry`]: the in-memory singleton registry of active missions.
 //! - [`persistence`]: the on-disk mirror of the registry, so active missions
 //!   survive app restarts.
+//! - [`reconcile`]: pure restore reconciliation rebinding each mission's stale
+//!   `group_id` to its live tab group by stable slug after a session restore.
 //! - [`start_mission_modal`]: the "Start Mission" modal body view.
 //! - [`mission_control_modal`]: the "Mission Control" active-missions overview modal.
 //! - [`gate_dialog`]: the between-stages human gate confirmation dialog.
@@ -12,11 +14,13 @@
 pub mod gate_dialog;
 pub mod mission_control_modal;
 pub mod persistence;
+pub mod reconcile;
 pub mod registry;
 pub mod scaffold;
 pub mod start_mission_modal;
 pub mod templates;
 
+pub use reconcile::reconcile_mission_groups;
 pub use registry::{ActiveMission, MissionRegistry, MissionRegistryEvent};
 pub use scaffold::{
     effective_stages, mark_mission_abandoned, onboarding_stage, profile_path, render_stage_prompt,

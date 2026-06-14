@@ -361,6 +361,7 @@ diesel::table! {
         name -> Nullable<Text>,
         color -> Nullable<Text>,
         collapsed -> Bool,
+        mission_slug -> Nullable<Text>,
     }
 }
 

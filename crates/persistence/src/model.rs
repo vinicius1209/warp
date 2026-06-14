@@ -362,7 +362,9 @@ pub struct NewTab {
 }
 
 /// Persisted form of a tab group. `name` is optional — untitled groups omit
-/// it and the UI falls back to a default label.
+/// it and the UI falls back to a default label. `mission_slug` ties the group
+/// to a Cockpit mission by its stable slug, so the mission can re-find its live
+/// group after a session restore mints a fresh `TabGroupId`.
 #[derive(Identifiable, Queryable, Associations)]
 #[diesel(belongs_to(Window))]
 #[diesel(table_name = tab_groups)]
@@ -372,6 +374,7 @@ pub struct TabGroup {
     pub name: Option<String>,
     pub color: Option<String>,
     pub collapsed: bool,
+    pub mission_slug: Option<String>,
 }
 
 #[derive(Insertable)]
@@ -381,6 +384,7 @@ pub struct NewTabGroup {
     pub name: Option<String>,
     pub color: Option<String>,
     pub collapsed: bool,
+    pub mission_slug: Option<String>,
 }
 
 /// The panes data model includes pane_nodes, pane_leaves and pane_branches.

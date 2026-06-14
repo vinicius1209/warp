@@ -68,6 +68,10 @@ pub struct TabGroupSnapshot {
     pub name: Option<String>,
     pub color: SelectedTabColor,
     pub collapsed: bool,
+    /// Stable slug of the Cockpit mission hosted in this group, if any. Lets a
+    /// restored mission re-find its live group after `read_app_state` mints a
+    /// fresh `TabGroupId`.
+    pub mission_slug: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

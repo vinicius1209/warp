@@ -578,6 +578,7 @@ fn test_sqlite_round_trips_tab_groups() {
                 name: Some("Backend".to_string()),
                 color: SelectedTabColor::Color(AnsiColorIdentifier::Blue),
                 collapsed: true,
+                mission_slug: Some("spec-driven-20260614-120000".to_string()),
             }],
         }],
         active_window_index: Some(0),
@@ -601,6 +602,12 @@ fn test_sqlite_round_trips_tab_groups() {
         SelectedTabColor::Color(AnsiColorIdentifier::Blue)
     );
     assert!(restored_group.collapsed);
+    // The mission slug round-trips so a restored mission can re-find its group
+    // by slug even though the in-memory `TabGroupId` is minted fresh.
+    assert_eq!(
+        restored_group.mission_slug.as_deref(),
+        Some("spec-driven-20260614-120000")
+    );
 
     // The in-memory `TabGroupId` is minted fresh on restore, so we check that
     // the grouped tab points at the restored group, and the ungrouped tab
