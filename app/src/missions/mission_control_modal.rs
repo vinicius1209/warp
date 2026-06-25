@@ -6,7 +6,7 @@
 //! the modal's visibility (same hosting pattern as
 //! [`crate::missions::start_mission_modal::StartMissionModal`]).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::Icon;
@@ -27,6 +27,7 @@ use warpui::{
 
 use crate::appearance::Appearance;
 use crate::missions::registry::{ActiveMission, MissionRegistry};
+use crate::missions::spec::{self, CriteriaProgress};
 use crate::modal::ModalAction;
 use crate::view_components::action_button::{ActionButton, NakedTheme, PrimaryTheme};
 
@@ -56,6 +57,10 @@ struct RowMouseStates {
 pub struct MissionControlModal {
     /// One entry per active mission row, sized in [`Self::on_open`].
     row_mouse_states: Vec<RowMouseStates>,
+    /// Per-row spec acceptance-criteria progress, snapshotted in
+    /// [`Self::on_open`] (parallel to `row_mouse_states`) so `render` reads no
+    /// files. Empty progress for missions without a spec checklist.
+    row_criteria: Vec<CriteriaProgress>,
     new_mission_button: ViewHandle<ActionButton>,
     close_button: ViewHandle<ActionButton>,
     close_button_mouse_state: MouseStateHandle,
@@ -104,6 +109,7 @@ impl MissionControlModal {
 
         Self {
             row_mouse_states: Vec::new(),
+            row_criteria: Vec::new(),
             new_mission_button,
             close_button,
             close_button_mouse_state: Default::default(),
@@ -112,9 +118,19 @@ impl MissionControlModal {
 
     /// Called by the workspace before making the modal visible.
     pub fn on_open(&mut self, ctx: &mut ViewContext<Self>) {
-        let mission_count = MissionRegistry::as_ref(ctx).missions().len();
+        // Snapshot each mission's spec criteria progress once, on open: reading
+        // spec.md here (rather than in `render`) keeps the per-row render pure.
+        let mission_dirs: Vec<PathBuf> = MissionRegistry::as_ref(ctx)
+            .missions()
+            .iter()
+            .map(|mission| mission.mission_dir.clone())
+            .collect();
         self.row_mouse_states
-            .resize_with(mission_count, Default::default);
+            .resize_with(mission_dirs.len(), Default::default);
+        self.row_criteria = mission_dirs
+            .iter()
+            .map(|mission_dir| spec::read_progress(mission_dir))
+            .collect();
         ctx.focus_self();
         ctx.notify();
     }
@@ -244,16 +260,23 @@ impl MissionControlModal {
             .finish(),
         );
 
-        // Stage progress.
+        // Stage progress, with the spec's acceptance-criteria tally appended
+        // when the mission has a checklist (snapshotted in `on_open`).
         let stage_name = mission
             .stages
             .get(mission.current_stage)
             .map(|stage| stage.name.as_str())
             .unwrap_or("?");
+        let criteria = self.row_criteria.get(index).copied().unwrap_or_default();
+        let criteria_suffix = if criteria.is_empty() {
+            String::new()
+        } else {
+            format!("   ·   {}/{} criteria", criteria.met, criteria.total)
+        };
         row.add_child(
             Text::new_inline(
                 format!(
-                    "Stage {}/{}: {stage_name}",
+                    "Stage {}/{}: {stage_name}{criteria_suffix}",
                     mission.current_stage + 1,
                     mission.stages.len()
                 ),

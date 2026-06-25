@@ -30,12 +30,19 @@ pub const DEFAULT_HARNESS_PREFERENCE: &[Harness] = &[
     Harness::Agy,
 ];
 
-/// Whether a harness's CLI is installed and runnable locally, and if not, how
-/// to fix it.
+/// Whether a harness is runnable locally for missions, and if not, how to fix
+/// it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HarnessAvailability {
     /// The harness's CLI resolves on `PATH`.
     Installed,
+    /// The template names a harness this mission launcher cannot run.
+    Unsupported {
+        /// The unsupported harness value from the template.
+        harness: String,
+        /// A friendly, one-line explanation.
+        message: String,
+    },
     /// The harness's CLI is not on `PATH`. Carries the command we looked for and
     /// a short, plain-language hint for installing it.
     NotInstalled {
@@ -60,6 +67,33 @@ fn harness_command(harness: Harness) -> Option<&'static str> {
         Harness::Agy => Some("agy"),
         Harness::Gemini | Harness::Oz | Harness::Unknown => None,
     }
+}
+
+fn supported_harnesses_hint() -> String {
+    DEFAULT_HARNESS_PREFERENCE
+        .iter()
+        .map(|harness| harness.config_name())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn unsupported_harness_message(harness: &str, parsed: Option<Harness>) -> String {
+    let supported = supported_harnesses_hint();
+    let harness = harness.trim();
+    if harness.is_empty() {
+        return format!(
+            "A mission stage has an empty harness name. Supported mission harnesses: {supported}."
+        );
+    }
+
+    if let Some(parsed) = parsed {
+        return format!(
+            "{} isn't supported for Cockpit missions yet. Supported mission harnesses: {supported}.",
+            parsed.display_name()
+        );
+    }
+
+    format!("Unsupported mission harness '{harness}'. Supported mission harnesses: {supported}.")
 }
 
 /// A short, human install hint per harness — the `install_docs_url` each harness
@@ -88,21 +122,31 @@ fn cli_is_installed(_command: &str) -> bool {
     false
 }
 
-/// Checks whether the named harness is installed locally.
+/// Checks whether the named harness can run locally for a mission.
 ///
 /// `harness` is the mission's stage/default harness string (a
 /// [`Harness::config_name`], e.g. `"claude"`). Unrecognized names and harnesses
-/// with no local CLI (Oz) are reported as [`HarnessAvailability::Installed`]:
-/// there is nothing for pre-flight to gate on, so the launch proceeds and any
-/// real failure surfaces through the normal driver path.
+/// with no local mission command are blocked before scaffolding so a bad
+/// template cannot leave behind an orphaned `.cockpit` mission directory.
 pub fn check_harness(harness: &str) -> HarnessAvailability {
+    check_harness_with(harness, cli_is_installed)
+}
+
+fn check_harness_with(
+    harness: &str,
+    cli_is_installed: impl Fn(&str) -> bool,
+) -> HarnessAvailability {
     let Some(parsed) = Harness::from_config_name(harness) else {
-        // A harness name this client doesn't know — nothing to pre-flight.
-        return HarnessAvailability::Installed;
+        return HarnessAvailability::Unsupported {
+            harness: harness.trim().to_string(),
+            message: unsupported_harness_message(harness, None),
+        };
     };
     let Some(command) = harness_command(parsed) else {
-        // Oz / Unknown: no local CLI to check.
-        return HarnessAvailability::Installed;
+        return HarnessAvailability::Unsupported {
+            harness: harness.trim().to_string(),
+            message: unsupported_harness_message(harness, Some(parsed)),
+        };
     };
     if cli_is_installed(command) {
         HarnessAvailability::Installed
@@ -147,82 +191,5 @@ pub fn pick_default_harness() -> String {
 }
 
 #[cfg(all(test, not(target_family = "wasm")))]
-mod tests {
-    use super::*;
-    use crate::missions::MissionStage;
-
-    fn stage(name: &str, harness: Option<&str>) -> MissionStage {
-        MissionStage {
-            name: name.to_string(),
-            harness: harness.map(str::to_string),
-            prompt: String::new(),
-            gate: None,
-        }
-    }
-
-    #[test]
-    fn check_harness_reports_present_binary_installed() {
-        // "sh" is present on every unix dev/CI machine this builds on.
-        assert_eq!(check_harness("sh"), HarnessAvailability::Installed);
-    }
-
-    #[test]
-    fn check_harness_reports_missing_binary_not_installed() {
-        // A bogus harness name still parses to nothing -> treated as installed
-        // (nothing to gate on). To exercise the NotInstalled path we need a
-        // real harness whose CLI is (essentially) never present in CI.
-        match check_harness("agy") {
-            HarnessAvailability::Installed => {
-                // agy happens to be installed on this machine; nothing to assert.
-            }
-            HarnessAvailability::NotInstalled {
-                command,
-                install_hint,
-            } => {
-                assert_eq!(command, "agy");
-                assert!(install_hint.contains("antigravity.google"));
-            }
-        }
-    }
-
-    #[test]
-    fn check_harness_treats_definitely_absent_command_as_not_installed() {
-        // Drive the detection function directly with a command that cannot
-        // resolve, proving the NotInstalled branch is reachable deterministically.
-        assert!(!cli_is_installed(
-            "warp-cockpit-definitely-not-a-real-binary-xyz"
-        ));
-    }
-
-    #[test]
-    fn unknown_and_oz_harness_are_not_gated() {
-        assert_eq!(check_harness("oz"), HarnessAvailability::Installed);
-        assert_eq!(
-            check_harness("some-future-harness"),
-            HarnessAvailability::Installed
-        );
-    }
-
-    #[test]
-    fn required_harnesses_dedups_and_falls_back_to_default() {
-        let stages = vec![
-            stage("onboarding", None),
-            stage("architect", Some("claude")),
-            stage("impl", Some("codex")),
-            stage("review", Some("claude")),
-        ];
-        assert_eq!(
-            required_harnesses(&stages, "claude"),
-            vec!["claude".to_string(), "codex".to_string()]
-        );
-    }
-
-    #[test]
-    fn pick_default_harness_returns_a_known_config_name() {
-        let picked = pick_default_harness();
-        assert!(
-            Harness::from_config_name(&picked).is_some(),
-            "pick_default_harness returned an unknown config name: {picked}"
-        );
-    }
-}
+#[path = "preflight_tests.rs"]
+mod tests;

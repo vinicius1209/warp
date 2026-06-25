@@ -6,10 +6,10 @@
 //! Confirm/Cancel actions re-emitted as events.
 
 use warpui::elements::{
-    Align, ChildAnchor, Container, MouseStateHandle, OffsetPositioning, ParentAnchor,
-    ParentOffsetBounds, Stack,
+    Align, Border, ChildAnchor, Container, CrossAxisAlignment, Flex, MainAxisSize, MouseStateHandle,
+    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Stack, Text,
 };
-use warpui::fonts::Weight;
+use warpui::fonts::{Properties, Weight};
 use warpui::geometry::vector::vec2f;
 use warpui::keymap::macros::*;
 use warpui::keymap::FixedBinding;
@@ -21,6 +21,7 @@ use warpui::{AppContext, Element, Entity, SingletonEntity, TypedActionView, View
 use warp_core::ui::theme::Fill;
 
 use crate::appearance::Appearance;
+use crate::missions::spec::CriteriaProgress;
 use crate::ui_components::dialog::{dialog_styles, Dialog};
 
 /// Registers fixed keybindings for the mission gate dialog.
@@ -40,6 +41,8 @@ pub fn init(app: &mut AppContext) {
 }
 
 const DIALOG_WIDTH: f32 = 460.;
+/// Wider variant used when the gate shows a spec review block.
+const DIALOG_WIDTH_WITH_SPEC: f32 = 560.;
 
 pub enum MissionGateDialogEvent {
     Confirm,
@@ -58,6 +61,13 @@ pub struct MissionGateDialog {
     /// The rendered gate text for the stage awaiting confirmation. `None`
     /// until the dialog is first opened.
     message: Option<String>,
+    /// Bounded preview of the just-finished stage's spec (`spec.md`), shown so
+    /// the human can review the artifact before approving. `None` hides the
+    /// whole review block (e.g. before any spec exists).
+    spec_preview: Option<String>,
+    /// Acceptance-criteria tally for the spec preview. `None`, or empty, hides
+    /// the "N/M criteria met" line while still showing the preview.
+    criteria: Option<CriteriaProgress>,
 }
 
 impl Default for MissionGateDialog {
@@ -72,12 +82,65 @@ impl MissionGateDialog {
             cancel_mouse_state: Default::default(),
             confirm_mouse_state: Default::default(),
             message: None,
+            spec_preview: None,
+            criteria: None,
         }
     }
 
     /// Called by the workspace before showing the dialog.
     pub fn set_message(&mut self, message: String) {
         self.message = Some(message);
+    }
+
+    /// Sets (or clears) the spec review context shown beneath the gate message:
+    /// a bounded `spec.md` preview and its acceptance-criteria tally. The
+    /// workspace calls this on every gate open — passing `None` for the preview
+    /// when the stage has no spec — so a stale preview never leaks across gates.
+    pub fn set_review_context(
+        &mut self,
+        spec_preview: Option<String>,
+        criteria: Option<CriteriaProgress>,
+    ) {
+        self.spec_preview = spec_preview;
+        self.criteria = criteria;
+    }
+
+    /// Builds the spec review block (criteria tally + bounded excerpt) shown
+    /// between the gate message and the buttons, or `None` when there's no spec.
+    fn render_review_block(&self, appearance: &Appearance) -> Option<Box<dyn Element>> {
+        let preview = self.spec_preview.as_ref()?;
+        let theme = appearance.theme();
+        let sub_text = theme.sub_text_color(theme.background());
+
+        let header = match self.criteria.filter(|criteria| !criteria.is_empty()) {
+            Some(criteria) => format!("Spec — {}/{} criteria met", criteria.met, criteria.total),
+            None => "Spec".to_string(),
+        };
+
+        let excerpt_box = Container::new(
+            Text::new(preview.clone(), appearance.ui_font_family(), 12.)
+                .with_color(sub_text.into())
+                .finish(),
+        )
+        .with_vertical_padding(8.)
+        .with_horizontal_padding(10.)
+        .with_border(Border::all(1.).with_border_fill(theme.outline()))
+        .finish();
+
+        Some(
+            Flex::column()
+                .with_main_axis_size(MainAxisSize::Min)
+                .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+                .with_spacing(6.)
+                .with_child(
+                    Text::new_inline(header, appearance.ui_font_family(), 13.)
+                        .with_color(theme.active_ui_text_color().into())
+                        .with_style(Properties::default().weight(Weight::Bold))
+                        .finish(),
+                )
+                .with_child(excerpt_box)
+                .finish(),
+        )
     }
 }
 
@@ -130,19 +193,32 @@ impl View for MissionGateDialog {
             .on_click(move |ctx, _, _| ctx.dispatch_typed_action(MissionGateDialogAction::Cancel))
             .finish();
 
-        let dialog = Dialog::new(
+        // Widen the dialog when a spec preview is present so the excerpt has
+        // room to breathe; otherwise keep the compact confirmation width.
+        let review_block = self.render_review_block(appearance);
+        let width = if review_block.is_some() {
+            DIALOG_WIDTH_WITH_SPEC
+        } else {
+            DIALOG_WIDTH
+        };
+
+        let mut dialog_builder = Dialog::new(
             "Advance mission?".into(),
             self.message.clone(),
             UiComponentStyles {
-                width: Some(DIALOG_WIDTH),
+                width: Some(width),
                 padding: Some(Coords::uniform(24.)),
                 ..dialog_styles(appearance)
             },
-        )
-        .with_bottom_row_child(cancel_button)
-        .with_bottom_row_child(confirm_button)
-        .build()
-        .finish();
+        );
+        if let Some(review_block) = review_block {
+            dialog_builder = dialog_builder.with_child(review_block);
+        }
+        let dialog = dialog_builder
+            .with_bottom_row_child(cancel_button)
+            .with_bottom_row_child(confirm_button)
+            .build()
+            .finish();
 
         // Stack needed so that the dialog can get bounds information.
         let mut stack = Stack::new();

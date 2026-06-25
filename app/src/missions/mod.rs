@@ -2,6 +2,7 @@
 //!
 //! - [`templates`]: the YAML template schema and loader.
 //! - [`scaffold`]: the on-disk `.cockpit/` structure and prompt rendering.
+//! - [`spec`]: parsing a spec's acceptance-criteria checklist for SDD progress.
 //! - [`registry`]: the in-memory singleton registry of active missions.
 //! - [`persistence`]: the on-disk mirror of the registry, so active missions
 //!   survive app restarts.
@@ -18,6 +19,7 @@ pub mod preflight;
 pub mod reconcile;
 pub mod registry;
 pub mod scaffold;
+pub mod spec;
 pub mod start_mission_modal;
 pub mod templates;
 

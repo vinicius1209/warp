@@ -2044,8 +2044,9 @@ impl AgentInputFooter {
     }
 
     /// Label for the mission chip when this pane's tab belongs to a tab
-    /// group hosting an active mission, e.g. "Executor (2/2)". `None` hides
-    /// the chip.
+    /// group hosting an active mission, e.g. "Executor (2/2) · 3/8". The
+    /// `· N/M` suffix is the spec's acceptance-criteria tally, shown only when
+    /// the mission has a checklist. `None` hides the chip.
     fn mission_chip_label(&self, app: &AppContext) -> Option<String> {
         let registry = MissionRegistry::as_ref(app);
         if registry.missions().is_empty() {
@@ -2063,12 +2064,21 @@ impl AgentInputFooter {
             .find_by_group(group_id)
             .and_then(|index| registry.get(index))?;
         let stage = mission.stages.get(mission.current_stage)?;
-        Some(format!(
+        let base = format!(
             "{} ({}/{})",
             stage.name,
             mission.current_stage + 1,
             mission.stages.len()
-        ))
+        );
+        // Append the spec's acceptance-criteria tally when present. Refreshed on
+        // each `MissionRegistry` change (e.g. stage advance), not live as boxes
+        // are checked — live spec watching is a later increment.
+        let criteria = crate::missions::spec::read_progress(&mission.mission_dir);
+        Some(if criteria.is_empty() {
+            base
+        } else {
+            format!("{base} · {}/{}", criteria.met, criteria.total)
+        })
     }
 
     /// Syncs the mission chip's visibility and label with the

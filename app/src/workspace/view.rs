@@ -371,7 +371,9 @@ use crate::terminal::available_shells::AvailableShells;
 use crate::terminal::block_list_viewport::InputMode;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::cli_agent_sessions::plugin_manager::{plugin_manager_for, PluginModalKind};
-use crate::terminal::cli_agent_sessions::{CLIAgentSessionsModel, CLIAgentSessionsModelEvent};
+use crate::terminal::cli_agent_sessions::{
+    CLIAgentSessionStatus, CLIAgentSessionsModel, CLIAgentSessionsModelEvent,
+};
 use crate::terminal::enable_auto_reload_modal::{
     EnableAutoReloadModal, EnableAutoReloadModalEvent,
 };
@@ -3656,6 +3658,47 @@ impl Workspace {
         ) && self.workspace_contains_terminal_view(event.terminal_view_id(), ctx)
         {
             ctx.notify();
+        }
+
+        // Auto-surface the mission gate when a stage's agent finishes its turn,
+        // so the human review step appears without the user having to notice the
+        // agent stopped. The gate still requires a human Confirm to advance.
+        self.maybe_auto_open_mission_gate(event, ctx);
+    }
+
+    /// When a mission stage's CLI agent finishes a turn (reaches `Success`),
+    /// opens that mission's gate so the review step surfaces automatically.
+    /// No-ops unless the finished agent's terminal belongs to an active
+    /// mission's tab group and no gate is already open (gates never stack).
+    fn maybe_auto_open_mission_gate(
+        &mut self,
+        event: &CLIAgentSessionsModelEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let CLIAgentSessionsModelEvent::StatusChanged {
+            terminal_view_id,
+            status: CLIAgentSessionStatus::Success,
+            ..
+        } = event
+        else {
+            return;
+        };
+        if self.current_workspace_state.is_mission_gate_dialog_open {
+            return;
+        }
+        let Some(group_id) = self.tab_group_for_terminal_view(*terminal_view_id, ctx) else {
+            return;
+        };
+        let slug = {
+            let registry = MissionRegistry::as_ref(ctx);
+            registry
+                .find_by_group(group_id)
+                .and_then(|index| registry.get(index))
+                .map(|mission| mission.slug.clone())
+        };
+        if let Some(slug) = slug {
+            log::debug!("Mission stage agent finished; auto-opening gate for {slug}");
+            self.mission_next_stage_for(Some(slug), ctx);
         }
     }
 
@@ -7068,27 +7111,35 @@ impl Workspace {
         let default_harness = missions::pick_default_harness();
 
         // Pre-flight: every harness this mission will actually run must be
-        // installed before we scaffold anything on disk. Validating here (before
-        // `scaffold_mission`) means a missing agent aborts cleanly with no
-        // leftover scaffold directory.
+        // supported and installed before we scaffold anything on disk.
+        // Validating here (before `scaffold_mission`) means a bad template or
+        // missing agent aborts cleanly with no leftover scaffold directory.
         let required = missions::required_harnesses(&stages, &default_harness);
         for harness in &required {
-            if let missions::HarnessAvailability::NotInstalled { install_hint, .. } =
-                missions::check_harness(harness)
-            {
-                let agent_name = Harness::from_config_name(harness)
-                    .map(|h| h.display_name())
-                    .unwrap_or(harness.as_str());
-                log::warn!("Mission pre-flight blocked: harness '{harness}' is not installed");
-                self.toast_stack.update(ctx, |toast_stack, ctx| {
-                    toast_stack.add_ephemeral_toast(
-                        DismissibleToast::error(format!(
-                            "{agent_name} isn't installed, so this mission can't start.\n{install_hint}"
-                        )),
-                        ctx,
-                    );
-                });
-                return;
+            match missions::check_harness(harness) {
+                missions::HarnessAvailability::Installed => {}
+                missions::HarnessAvailability::NotInstalled { install_hint, .. } => {
+                    let agent_name = Harness::from_config_name(harness)
+                        .map(|h| h.display_name())
+                        .unwrap_or(harness.as_str());
+                    log::warn!("Mission pre-flight blocked: harness '{harness}' is not installed");
+                    self.toast_stack.update(ctx, |toast_stack, ctx| {
+                        toast_stack.add_ephemeral_toast(
+                            DismissibleToast::error(format!(
+                                "{agent_name} isn't installed, so this mission can't start.\n{install_hint}"
+                            )),
+                            ctx,
+                        );
+                    });
+                    return;
+                }
+                missions::HarnessAvailability::Unsupported { message, .. } => {
+                    log::warn!("Mission pre-flight blocked: unsupported harness '{harness}'");
+                    self.toast_stack.update(ctx, |toast_stack, ctx| {
+                        toast_stack.add_ephemeral_toast(DismissibleToast::error(message), ctx);
+                    });
+                    return;
+                }
             }
         }
 
@@ -7318,8 +7369,16 @@ impl Workspace {
                 )
             }
         };
+        // Surface the current stage's spec for human review at the gate: a
+        // bounded excerpt plus its acceptance-criteria tally. An absent spec
+        // yields `None`, which also clears any preview from a previous gate.
+        let spec_preview = missions::spec::read_spec_excerpt(&mission_dir, 14);
+        let criteria = spec_preview
+            .as_ref()
+            .map(|_| missions::spec::read_progress(&mission_dir));
         self.mission_gate_dialog.update(ctx, |dialog, _| {
             dialog.set_message(message);
+            dialog.set_review_context(spec_preview, criteria);
         });
         self.mission_gate_pending_slug = Some(slug);
         self.current_workspace_state.is_mission_gate_dialog_open = true;

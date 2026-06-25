@@ -53,7 +53,7 @@ stages:
 
       A partir do briefing abaixo, escreva uma spec completa em {{mission_dir}}/spec.md contendo:
       - Objetivo
-      - Critérios de aceite testáveis
+      - Critérios de aceite como checklist markdown: uma linha "- [ ] critério testável" por critério (este formato é lido pela UI para mostrar o progresso da missão)
       - Arquivos a criar/modificar, com justificativa
       - Casos de borda
       - Fora de escopo
@@ -66,7 +66,7 @@ stages:
     prompt: |
       Implemente EXATAMENTE o que {{mission_dir}}/spec.md define.
       Siga as convenções de código existentes no projeto e não expanda o escopo.
-      Atualize o checklist da spec conforme concluir cada item.
+      Conforme concluir cada critério de aceite, edite {{mission_dir}}/spec.md e troque "- [ ]" por "- [x]" naquele item.
       Ao terminar, resuma o que mudou.
     gate: "Implementação concluída. Revise o diff antes de liberar a revisão final."
   - name: "Revisor"

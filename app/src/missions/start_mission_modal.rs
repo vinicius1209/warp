@@ -701,6 +701,12 @@ impl StartMissionModal {
                 format!("not installed — {install_hint}"),
                 error_fill,
             ),
+            Some(HarnessAvailability::Unsupported { message, .. }) => (
+                Icon::X,
+                error_fill,
+                format!("unsupported — {message}"),
+                error_fill,
+            ),
         };
 
         Flex::row()
