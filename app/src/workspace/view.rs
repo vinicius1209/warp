@@ -2179,7 +2179,7 @@ impl Workspace {
     }
 
     fn build_mission_gate_dialog(ctx: &mut ViewContext<Self>) -> ViewHandle<MissionGateDialog> {
-        let dialog = ctx.add_typed_action_view(|_| MissionGateDialog::new());
+        let dialog = ctx.add_typed_action_view(|ctx| MissionGateDialog::new(ctx));
         ctx.subscribe_to_view(&dialog, |me, _, event, ctx| {
             me.handle_mission_gate_dialog_event(event, ctx);
         });
@@ -7171,7 +7171,7 @@ impl Workspace {
         let mission_index = MissionRegistry::handle(ctx)
             .update(ctx, |registry, ctx| registry.register(mission, ctx));
 
-        let Some(tab_index) = self.open_mission_stage_tab(&slug, 0, ctx) else {
+        let Some(tab_index) = self.open_mission_stage_tab(&slug, 0, None, ctx) else {
             return;
         };
 
@@ -7376,9 +7376,10 @@ impl Workspace {
         let criteria = spec_preview
             .as_ref()
             .map(|_| missions::spec::read_progress(&mission_dir));
-        self.mission_gate_dialog.update(ctx, |dialog, _| {
+        self.mission_gate_dialog.update(ctx, |dialog, ctx| {
             dialog.set_message(message);
             dialog.set_review_context(spec_preview, criteria);
+            dialog.reset_feedback(ctx);
         });
         self.mission_gate_pending_slug = Some(slug);
         self.current_workspace_state.is_mission_gate_dialog_open = true;
@@ -7409,6 +7410,19 @@ impl Workspace {
             MissionGateDialogEvent::Cancel => {
                 self.mission_gate_pending_slug = None;
                 self.focus_active_tab(ctx);
+            }
+            MissionGateDialogEvent::Revise(feedback) => {
+                // Re-run the current stage with the user's feedback appended,
+                // instead of advancing. Resolve the slug to a live mission at
+                // confirm time: it may have been abandoned while the gate was open.
+                if let Some(slug) = self.mission_gate_pending_slug.take() {
+                    if self.mission_index_by_slug(&slug, ctx).is_some() {
+                        self.revise_mission_stage(&slug, feedback, ctx);
+                    } else {
+                        self.toast_mission_gone(ctx);
+                        self.focus_active_tab(ctx);
+                    }
+                }
             }
         }
     }
@@ -7447,7 +7461,7 @@ impl Workspace {
         {
             log::warn!("Failed to update mission manifest in {mission_dir:?}: {err:?}");
         }
-        let Some(tab_index) = self.open_mission_stage_tab(slug, next_stage, ctx) else {
+        let Some(tab_index) = self.open_mission_stage_tab(slug, next_stage, None, ctx) else {
             return;
         };
         if FeatureFlag::GroupedTabs.is_enabled() {
@@ -7468,6 +7482,35 @@ impl Workspace {
         self.focus_active_tab(ctx);
     }
 
+    /// Re-runs the current stage of the mission with `feedback` appended to the
+    /// stage prompt, in a new tab in the mission's group. Unlike advancing, the
+    /// registry stays on the current stage (the manifest stays Running).
+    /// Resolves the stable `slug` to a live mission at call time.
+    fn revise_mission_stage(&mut self, slug: &str, feedback: &str, ctx: &mut ViewContext<Self>) {
+        let mission_data = {
+            let registry = MissionRegistry::as_ref(ctx);
+            registry
+                .find_by_slug(slug)
+                .and_then(|index| registry.get(index))
+                .map(|mission| (mission.current_stage, mission.group_id))
+        };
+        let Some((current_stage, group_id)) = mission_data else {
+            self.toast_mission_gone(ctx);
+            return;
+        };
+        let Some(tab_index) =
+            self.open_mission_stage_tab(slug, current_stage, Some(feedback), ctx)
+        else {
+            return;
+        };
+        if FeatureFlag::GroupedTabs.is_enabled() {
+            if let Some(group_id) = group_id.filter(|id| self.tab_groups.contains_key(id)) {
+                self.move_tab_to_group(tab_index, group_id, ctx);
+            }
+        }
+        self.focus_active_tab(ctx);
+    }
+
     /// Opens a new tab running the given mission stage's harness, seeded with
     /// the stage's rendered prompt. Resolves the stable `slug` to a live
     /// mission at call time. Returns the new tab's index, or `None` when the
@@ -7477,6 +7520,7 @@ impl Workspace {
         &mut self,
         slug: &str,
         stage_index: usize,
+        feedback: Option<&str>,
         ctx: &mut ViewContext<Self>,
     ) -> Option<usize> {
         let mission_data = {
@@ -7505,8 +7549,16 @@ impl Workspace {
         // mission's brief.md (it was written at scaffold time). A read error
         // aborts: never launch the agent against a silently empty briefing.
         let briefing = self.read_mission_briefing(&mission_dir, ctx)?;
-        let prompt =
+        let mut prompt =
             missions::render_stage_prompt(&stage.prompt, &briefing, &mission_dir, &project_dir);
+        // When re-running a stage via the gate's "Request changes", append the
+        // human's feedback so the agent addresses it before proceeding.
+        if let Some(feedback) = feedback.map(str::trim).filter(|feedback| !feedback.is_empty()) {
+            prompt.push_str(
+                "\n\n---\nFeedback do revisor humano (resolva estes pontos antes de prosseguir):\n",
+            );
+            prompt.push_str(feedback);
+        }
 
         let pane_template = PaneTemplateType::PaneTemplate {
             cwd: project_dir,
@@ -7613,7 +7665,7 @@ impl Workspace {
             );
             Some(self.active_tab_index)
         } else {
-            self.open_mission_stage_tab(&slug, current_stage, ctx)
+            self.open_mission_stage_tab(&slug, current_stage, None, ctx)
         };
         let Some(tab_index) = tab_index else {
             return;
