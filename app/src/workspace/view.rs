@@ -7464,9 +7464,17 @@ impl Workspace {
         let Some(tab_index) = self.open_mission_stage_tab(slug, next_stage, None, ctx) else {
             return;
         };
+        let keep_pane_group_id = self.tabs.get(tab_index).map(|tab| tab.pane_group.id());
         if FeatureFlag::GroupedTabs.is_enabled() {
             if let Some(group_id) = group_id.filter(|id| self.tab_groups.contains_key(id)) {
                 self.move_tab_to_group(tab_index, group_id, ctx);
+                // Close the superseded stage tabs so their (idle but still
+                // alive) CLI agent processes are terminated. Otherwise a
+                // multi-stage mission accumulates one live agent per stage and
+                // can consume GBs; prior stages' output persists in .cockpit.
+                if let Some(keep_pane_group_id) = keep_pane_group_id {
+                    self.close_superseded_mission_stage_tabs(group_id, keep_pane_group_id, ctx);
+                }
             }
         }
         // Advance the registry after the new stage tab has joined the
@@ -7503,12 +7511,56 @@ impl Workspace {
         else {
             return;
         };
+        let keep_pane_group_id = self.tabs.get(tab_index).map(|tab| tab.pane_group.id());
         if FeatureFlag::GroupedTabs.is_enabled() {
             if let Some(group_id) = group_id.filter(|id| self.tab_groups.contains_key(id)) {
                 self.move_tab_to_group(tab_index, group_id, ctx);
+                // Drop the superseded redo tab so its CLI agent is terminated
+                // (see close_superseded_mission_stage_tabs).
+                if let Some(keep_pane_group_id) = keep_pane_group_id {
+                    self.close_superseded_mission_stage_tabs(group_id, keep_pane_group_id, ctx);
+                }
             }
         }
         self.focus_active_tab(ctx);
+    }
+
+    /// Closes every tab in the mission's tab group except the one whose pane
+    /// group is `keep_pane_group_id` (the freshly opened stage). Closing a tab
+    /// terminates its CLI agent child process, so a mission keeps at most one
+    /// live agent instead of accumulating one per stage/resume/revise (the
+    /// root cause of multi-GB memory growth). The previous stages' durable
+    /// output lives in the `.cockpit` artifacts (spec.md / review.md / log.md);
+    /// only the terminal scrollback is discarded. The kept tab is identified by
+    /// its stable pane-group id, so closures shifting tab indices are safe.
+    fn close_superseded_mission_stage_tabs(
+        &mut self,
+        group_id: TabGroupId,
+        keep_pane_group_id: EntityId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let to_close: Vec<usize> = group_member_indices(&self.tabs, group_id)
+            .filter(|&index| {
+                self.tabs
+                    .get(index)
+                    .is_some_and(|tab| tab.pane_group.id() != keep_pane_group_id)
+            })
+            .collect();
+        if to_close.is_empty() {
+            return;
+        }
+        self.close_tabs(
+            to_close.into_iter(),
+            OpenDialogSource::CloseOtherTabs {
+                tab_index: self.active_tab_index,
+            },
+            // Mission agents are ephemeral and their artifacts persist on disk,
+            // so skip the unsaved-state confirmation; keep undo so a closed
+            // stage tab can be reopened.
+            true,
+            true,
+            ctx,
+        );
     }
 
     /// Opens a new tab running the given mission stage's harness, seeded with
